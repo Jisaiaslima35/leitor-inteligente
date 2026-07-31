@@ -7,6 +7,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
 from functools import lru_cache
+sys.path.insert(0, str(Path(__file__).parent))
+from book_meta import get_book_meta, build_system_prompt  # noqa: E402
 
 SUPABASE_ENV = {}
 for line in Path('/root/.hermes/secrets/leitor-supabase.env').read_text().splitlines():
@@ -129,14 +131,9 @@ def semantic_answer(question: str, current_page: int = 1, k: int = 5):
         f'[FONTE: Página {s["page"]} do PDF — similaridade {s["similarity"]:.2f}]\n{s["text"][:6000]}'
         for s in sources
     )
-    system = (
-        'Você é o Professor IA do livro "O Fabricante de Lágrimas" de Erin Doom. '
-        'Responda em português do Brasil, didático e fiel ao livro. '
-        'Use SOMENTE o contexto fornecido (cada trecho vem de uma página específica do PDF). '
-        'Se a pergunta mencionar página ou capítulo, responda especificamente sobre ele. '
-        'Cite no fim as páginas PDF usadas no formato "Fontes: pX, pY, pZ". '
-        'Se o contexto não contiver a resposta, diga claramente que não encontrou naquele conteúdo.'
-    )
+    # System prompt parametrizado (hardcoded "O Fabricante de Lágrimas" foi um bug — agora pega do banco)
+    meta = get_book_meta(BOOK_SLUG)
+    system = build_system_prompt(meta, fallback_title='O Fabricante de Lágrimas')
     payload = json.dumps({
         'model': 'hermes-agent',
         'messages': [

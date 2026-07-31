@@ -129,7 +129,8 @@ leitor-inteligente/
 │   ├── streak_server.py          # 9132 - streak diário
 │   ├── signed_url_server.py      # 9133 - signed URL Supabase Storage
 │   ├── upload_book.py            # 9134 - pipeline upload completo
-│   └── fabricante_server.py      # 9135 - Fabricante de Lágrimas (específico)
+│   ├── fabricante_server.py      # 9135 - Fabricante de Lágrimas (específico)
+│   └── book_meta.py              # Helper compartilhado - metadata + system prompts parametrizados
 ├── src/
 │   ├── App.tsx                   # Router principal
 │   ├── main.tsx                  # Entry point

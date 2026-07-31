@@ -2,11 +2,13 @@
 """Leitor IA - RAG Semantico (BGE-small-en via Supabase + Hermes).
 Roda na porta 9131 separado do server.py legacy.
 """
-import json, re, threading
+import json, re, sys, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
 from functools import lru_cache
+sys.path.insert(0, str(Path(__file__).parent))
+from book_meta import get_book_meta, build_system_prompt  # noqa: E402
 
 # --- Config ---
 SUPABASE_ENV = {}
@@ -149,14 +151,9 @@ def semantic_answer(question: str, current_page: int = 1, book_slug: str = BOOK_
         f'[FONTE: {s["title"]}, PDF página {s["page"]} — similaridade {s["similarity"]:.2f}]\n{s["text"][:6000]}'
         for s in sources
     )
-    system = (
-        'Você é o Professor IA do livro O Poder do Hábito, de Charles Duhigg. '
-        'Responda em português do Brasil, didático e fiel ao livro. '
-        'Use SOMENTE o contexto fornecido (cada trecho vem de uma página específica do PDF). '
-        'Se a pergunta mencionar página ou capítulo, responda especificamente sobre ele. '
-        'Cite no fim as páginas PDF usadas no formato "Fontes: pX, pY, pZ". '
-        'Se o contexto não contiver a resposta, diga claramente que não encontrou naquele conteúdo.'
-    )
+    # System prompt parametrizado pelo slug real do livro (Pitfall #74 + #79)
+    meta = get_book_meta(book_slug)
+    system = build_system_prompt(meta, fallback_title='o livro atual')
     payload = json.dumps({
         'model': 'hermes-agent',
         'messages': [
