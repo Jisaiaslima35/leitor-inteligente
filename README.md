@@ -81,40 +81,25 @@ sudo rsync -a --delete dist/ /var/www/preview/leitor-inteligente/
 ### Backend (cada serviço em seu terminal)
 
 ```bash
-# Cada serviço roda standalone — idealmente em systemd
-python3 /root/projetos/leitor-inteligente/api/fabricante_server.py   # 9135
-python3 /root/projetos/leitor-inteligente/api/semantic_server.py    # 9131
-python3 /root/projetos/leitor-inteligente/api/server.py             # 9130
-python3 /root/projetos/leitor-inteligente/api/streak_server.py      # 9132
-python3 /root/projetos/leitor-inteligente/api/signed_url_server.py  # 9133
-python3 /root/projetos/leitor-inteligente/api/upload_book.py        # 9134
+python3 api/fabricante_server.py   # 9135
+python3 api/semantic_server.py    # 9131
+python3 api/server.py             # 9130
+python3 api/streak_server.py      # 9132
+python3 api/signed_url_server.py  # 9133
+python3 api/upload_book.py        # 9134
 ```
 
 ### Variáveis de ambiente
 
-Arquivo em `/root/.hermes/secrets/leitor-supabase.env`:
+Frontend (Vite — `import.meta.env`):
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
 
-```bash
-SUPABASE_URL=https://xxx.supabase.co
-SUPABASE_SERVICE_ROLE=eyJhb...
-SUPABASE_ANON_KEY=eyJhb...
-```
+Backend (Python — `/root/.hermes/secrets/leitor-supabase.env`):
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE`
 
-**Frontend** lê via `import.meta.env.VITE_SUPABASE_URL` etc — definir em `.env.production`.
-
----
-
-## 📦 Indexar um livro novo
-
-Para adicionar um livro ao catálogo (admin):
-
-```bash
-# 1. Coloca PDF em data/livro.pdf
-# 2. Roda script de indexação (gera data/livro-pages.json)
-python3 scripts/build_index.py --pdf data/livro.pdf --slug meu-livro
-
-# 3. Insere no Supabase via API admin (TODO)
-```
+Copie `.env.example` para `.env.production` e preencha.
 
 ---
 
@@ -125,9 +110,9 @@ python3 scripts/build_index.py --pdf data/livro.pdf --slug meu-livro
 | 70 | nginx 502 | Conflito docker-proxy Coolify em 9121 | Usar `preview-only.conf` separada |
 | 71 | MIME `text/html` em `.mjs` | `types{}` em server block **sobrescreve** mime.types | Usar **http block** |
 | 72 | ExecReload não aceita `-g` | systemd limitation | Só `nginx -s reload` |
-| 73 | Texto bichado tipo `cri­a­da` | `pdftotext -layout` insere ~166k **soft hyphens** U+00AD | `re.sub(r'[­]', '', text)` + `re.sub(r'(\\w)-\\n\\s*(\\w)', r'\\1\\2', text)` ANTES de gerar embeddings |
+| 73 | Texto bichado tipo `cri­a­da` | `pdftotext -layout` insere ~166k **soft hyphens** U+00AD | `re.sub(r'[\u00AD]', '', text)` + juntar hifens ANTES de embeddings |
 | 74 | Chat cita livro errado | Frontend mandava URL hardcoded `/semantic-api/` (porta 9131 genérica) | Sempre usar `/<book.id>/semantic-api/...` (inclui slug) |
-| 75 | Upload falha `URL can't contain control characters` | Filename com acentos rejeitado pelo Supabase Storage | Sanitizar: NFKD → ascii → `re.sub(r'[^a-zA-Z0-9._-]', '_', fn)` |
+| 75 | Upload `URL can't contain control characters` | Filename com acentos rejeitado pelo Storage | NFKD → ascii → `re.sub(r'[^a-zA-Z0-9._-]', '_', fn)` |
 | 76 | `fastembed` ImportError | Não instalado no venv do Hermes | `pip install fastembed` |
 | 77 | `multiprocessing RuntimeError` | fastembed parallel sem `if __name__ == '__main__'` | Envolver em main() + `parallel=0` |
 | 78 | Livro da biblioteca abre vazio | `activeBook = CATALOG.find(...)` não cobre livros uploaded | Tentar catalog → fallback Supabase via `loadEbookBySlug(slug)` → tela de erro amigável |
@@ -148,24 +133,15 @@ leitor-inteligente/
 ├── src/
 │   ├── App.tsx                   # Router principal
 │   ├── main.tsx                  # Entry point
-│   ├── components/               # UI reutilizável (Topbar, PdfViewer, BookCard, CheckoutModal)
-│   ├── domain/                   # Lógica de negócio (catalog, types, rag, storage, library)
-│   ├── lib/                      # Wrappers externos (AuthContext, supabase, supabaseStorage, streak)
-│   ├── pages/                    # Páginas principais (Library, Reader, Upload, Store, Admin, Login, Professor, Home)
+│   ├── components/               # UI reutilizável
+│   ├── domain/                   # Lógica de negócio
+│   ├── lib/                      # Wrappers externos
+│   ├── pages/                    # Páginas principais
 │   ├── styles/global.css         # Tema dark mobile-first
-│   └── vite-env.d.ts             # Tipos do Vite
-├── data/                         # Cache local de indexação (NÃO versionado, regenerável)
-│   └── *-pages.json              # Texto por página de cada livro
-├── public/
-│   ├── books/                    # PDFs estáticos (Fabricante — único versionado)
-│   ├── favicon.svg
-│   └── icon-{192,512}.svg
+│   └── vite-env.d.ts
+├── data/                         # Cache local de indexação (NÃO versionado)
+├── public/books/                 # PDFs estáticos
 ├── tests/                        # Vitest
-├── index.html                    # HTML raiz
-├── package.json                  # Deps Vite + React + lucide-react + @supabase/supabase-js
-├── vite.config.ts                # base: '/leitor-inteligente/'
-├── vitest.config.ts
-├── tsconfig.{json,app,node}.json
 └── README.md                     # Este arquivo
 ```
 
@@ -174,10 +150,10 @@ leitor-inteligente/
 ## 🔐 Segurança
 
 - **RLS** ativo no Supabase: cada user só vê seus próprios livros/progresso.
-- **JWT** Supabase validado nas APIs Python via decode do payload (anon key, sem round-trip).
-- **Signed URLs** com TTL de 60min (`signed_url_server.py`).
+- **JWT** Supabase validado nas APIs Python via decode do payload (sem round-trip).
+- **Signed URLs** com TTL de 60min.
 - **Service Role key** usada apenas nas APIs Python (nunca no frontend).
-- **Filenames** sanitizados para ASCII puro (Supabase Storage rejeita não-ASCII no path).
+- **Filenames** sanitizados para ASCII puro.
 
 ---
 
