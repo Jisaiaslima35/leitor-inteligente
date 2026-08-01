@@ -47,21 +47,75 @@ LEXICAL_PATHS = {
     'biblia-dake-galatas': '/root/projetos/leitor-inteligente/data/biblia-dake-galatas-pages.json',
 }
 
+# Cache de slug→ebook_id (evita query repetida no Supabase)
+@lru_cache(maxsize=64)
+def _resolve_ebook_id(book_slug: str) -> str | None:
+    """Resolve slug do ebook → UUID do ebook (cacheado)."""
+    try:
+        from urllib.request import Request, urlopen
+        import urllib.parse
+        path = '/rest/v1/ebooks?select=id&slug=eq.' + urllib.parse.quote(book_slug) + '&limit=1'
+        req = Request(
+            f'{SUPABASE_URL}{path}',
+            headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+        )
+        with urlopen(req, timeout=10) as r:
+            rows = json.loads(r.read())
+        if rows:
+            return rows[0]['id']
+    except Exception as e:
+        print(f'[_resolve_ebook_id] erro slug={book_slug}: {e}', flush=True)
+    return None
+
+
 def lexical_page_lookup(page_num: int, book_slug: str = BOOK_SLUG, k: int = 3):
-    """Fallback: lê páginas exatas do JSON local (pra 'página N' explícita).
-    book_slug escolhe qual corpus (sem isso, sempre caía no Hábito)."""
+    """Busca páginas EXATAS no Supabase por page_number (funciona pra QUALQUER livro).
+    Pitfall #81: antes só funcionava pra 2 livros hardcoded em LEXICAL_PATHS.
+    Agora consulta Supabase direto — cobre uploaded books tbm.
+    Schema real: ebook_pages tem ebook_id (FK) + page_number + page_text.
+    """
+    candidates = [page_num, page_num - 1, page_num + 1]
+    ebook_id = _resolve_ebook_id(book_slug)
+    if not ebook_id:
+        print(f'[lexical_page_lookup] ebook_id não encontrado pra slug={book_slug}', flush=True)
+    else:
+        try:
+            ids = ','.join(str(x) for x in candidates if x >= 1)
+            from urllib.request import Request, urlopen
+            path = f'/rest/v1/ebook_pages?select=page_number,page_text&ebook_id=eq.{ebook_id}&page_number=in.({ids})&order=page_number'
+            req = Request(
+                f'{SUPABASE_URL}{path}',
+                headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+            )
+            with urlopen(req, timeout=10) as r:
+                rows = json.loads(r.read())
+            out = []
+            for row in rows:
+                txt = (row.get('page_text') or '').strip()
+                if txt and len(txt) > 10:
+                    out.append({
+                        'page_number': row['page_number'],
+                        'chapter_number': None,
+                        'chapter_title': None,
+                        'page_text': txt,
+                        'similarity': 1.0,
+                    })
+            if out:
+                print(f'[lexical_page_lookup] Supabase retornou {len(out)} hits pra p{page_num} (slug={book_slug})', flush=True)
+                return out[:k]
+        except Exception as e:
+            print(f'[lexical_page_lookup] erro Supabase: {e}', flush=True)
+
+    # Fallback: JSON local (pros livros originais que têm corpus local)
     corpus_path = LEXICAL_PATHS.get(book_slug)
     if not corpus_path:
-        print(f'[lexical_page_lookup] slug "{book_slug}" sem corpus local', flush=True)
+        print(f'[lexical_page_lookup] slug "{book_slug}" sem corpus local nem Supabase', flush=True)
         return []
     try:
-        from pathlib import Path
         pages = json.loads(Path(corpus_path).read_text())
     except Exception as e:
         print(f'[lexical_page_lookup] erro lendo {corpus_path}: {e}', flush=True)
         return []
-
-    candidates = [page_num, page_num - 1, page_num + 1]
     out = []
     for p in candidates:
         if 1 <= p <= len(pages):
