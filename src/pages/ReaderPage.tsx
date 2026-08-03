@@ -4,6 +4,7 @@ import type { Book } from '../domain/types'
 import type { ProgressState } from '../domain/library'
 import { getProgress } from '../domain/progress'
 import { PdfViewer } from '../components/PdfViewer'
+import { ShareActions } from '../components/ShareActions'
 import type { RagSource } from '../domain/rag'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
@@ -313,6 +314,7 @@ function ProfessorChat({ book, messages, input, setInput, send, thinking, listen
                 ))}
               </div>
             )}
+            {m.role === 'ai' && <ShareActions text={m.text} bookTitle={book.title} />}
           </div>
         ))}
         {thinking && <div className="bubble ai">Consultando o livro completo…</div>}

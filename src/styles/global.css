@@ -291,6 +291,24 @@ input, textarea { font: inherit; color: inherit; }
   flex-wrap: wrap;
 }
 .bubble .source .chip { background: white; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; cursor: pointer; }
+
+/* Ações de compartilhar/copiar respostas do Professor IA */
+.share-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.share-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: white;
+  color: var(--ink, var(--text));
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.share-btn:hover { background: var(--bg); border-color: var(--brand, #2c5f3f); }
+.share-btn:active { transform: translateY(1px); }
 .composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
 .composer input {
   flex: 1;
