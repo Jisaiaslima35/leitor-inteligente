@@ -104,7 +104,8 @@ export const CATALOG: Book[] = [
     description: 'Estudo exegético do livro de Gálatas. Inclui sumário, 8 doutrinas em destaque, divisões por versículo, referências cruzadas e notas teológicas.',
     price: 0,
     totalPages: 12,
-    cover: 'https://yfnzlowtgnlqizobnslh.supabase.co/storage/v1/object/sign/ebooks/biblia-dake-galatas/capa.jpg?token=eyJraWQiOiJzdG9yYWdlLXVybC1zaWduaW5nLWtleV9kNjM5ZTQ5YS1lYTE5LTQ5M2EtOTFlNS05MjFiYTA0NGNlMDYiLCJhbGciOiJIUzI1NiJ9.eyJ1cmwiOiJlYm9va3MvYmlibGlhLWRha2UtZ2FsYXRhcy9jYXBhLmpwZyIsInNjb3BlIjoiZG93bmxvYWQiLCJpYXQiOjE3ODUyODYyNzksImV4cCI6MTgxNjgyMjI3OX0.h05NEgLMeBpq3AJAQSxD4rj_xzOD_bqRu0M3LX8UrDQ',
+    // Capa carregada dinamicamente do Supabase Storage via getCoverURL(bookId)
+    cover: '',
     highlights: [
       '8 doutrinas em destaque na Epístola aos Gálatas',
       'Justificação pela fé sem as obras da lei',
@@ -120,10 +121,25 @@ export const CATALOG: Book[] = [
       },
     ],
   },
+  {
+    id: 'teste-r5',
+    title: 'Ebook Teste R$5 — Hermes',
+    author: 'Isaías (teste)',
+    description: 'Ebook criado pra testar checkout dinâmico do Asaas sandbox. Pode deletar depois.',
+    price: 500,
+    totalPages: 10,
+    cover: '',
+    highlights: [
+      'Teste de checkout dinâmico',
+      'Integração Asaas sandbox',
+      'Webhook PAYMENT_RECEIVED',
+    ],
+    chunks: [],
+  },
 ]
 
-export function findBook(id: string): Book | undefined {
-  return CATALOG.find((book) => book.id === id)
+export function findBook(bookId: string): Book | undefined {
+  return CATALOG.find((book) => book.id === bookId)
 }
 
 export type { Book } from './types'

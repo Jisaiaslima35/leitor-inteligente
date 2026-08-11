@@ -17,6 +17,7 @@ interface AuthContextValue {
     password: string,
     fullName?: string,
   ) => Promise<{ ok: boolean; error?: string; needsConfirmation?: boolean }>
+  signInWithGoogle: () => Promise<{ ok: boolean; error?: string }>
   signOut: () => Promise<void>
 }
 
@@ -116,6 +117,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       },
       signOut: async () => {
         await supabase.auth.signOut()
+      },
+      signInWithGoogle: async () => {
+        if (!SUPABASE_READY) return { ok: false, error: 'Supabase não configurado' }
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: {
+            redirectTo: `${window.location.origin}${window.location.pathname}`,
+          },
+        })
+        return error ? { ok: false, error: error.message } : { ok: true }
       },
     }
   }, [session, supabaseUser, isReady])

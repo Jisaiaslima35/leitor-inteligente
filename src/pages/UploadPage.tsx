@@ -61,11 +61,13 @@ export function UploadPage({ onBack, onSuccess }: Props) {
   }
 
   // Re-após check de null acima, TS acha que file é não-null dentro do escopo
-  // Polling: a cada 4s pergunta pro backend se o livro está pronto
+  // Polling: a cada 5s pergunta pro backend se o livro está pronto.
+  // 360 tries × 5s = 30 min. Cobre livros grandes (~600p = ~20 min).
+  // Antes era 60 × 4s = 4 min — quebrava pra livros > 80p.
   const pollStatus = async (id: string) => {
-    const tries = 60 // 60 × 4s = 4min
+    const tries = 360 // 360 × 5s = 30 min
     for (let i = 0; i < tries; i++) {
-      await new Promise((r) => setTimeout(r, 4000))
+      await new Promise((r) => setTimeout(r, 5000))
       try {
         const { data } = await supabase
           .from('user_library')
@@ -83,7 +85,7 @@ export function UploadPage({ onBack, onSuccess }: Props) {
       }
     }
     // Timeout: livro grande ou erro silencioso
-    setErrorMsg('O processamento está demorando mais que o esperado. Atualize a biblioteca em alguns minutos — se não aparecer, fale conosco.')
+    setErrorMsg('O processamento está demorando mais que o esperado (mais de 30min). Pode ser livro muito grande ou erro silencioso. Atualize a biblioteca em alguns minutos — se não aparecer, fale conosco.')
     setStatus('error')
   }
 
@@ -143,9 +145,11 @@ export function UploadPage({ onBack, onSuccess }: Props) {
       const proc = await procRes.json()
       setEbookId(proc.ebook_id)
 
-      // ETA estimando baseado no nº de páginas: ~5s/página (BGE CPU)
-      // Livro 28p ≈ 1.5min, Livro 200p ≈ 5min, Livro 653p ≈ 13min
-      const etaSeconds = Math.max(60, (pdfPageCount || 28) * 3)
+      // ETA estimando baseado no nº de páginas: ~3s/página (BGE CPU)
+      // Livro 28p ≈ 1min, Livro 200p ≈ 10min, Livro 653p ≈ 33min
+      // Se frontend não detectou páginas (regex falhou), usa fallback 100 (~5min) — antes era 28 (1min, mentiroso)
+      const effectivePages = pdfPageCount || 100
+      const etaSeconds = Math.max(60, effectivePages * 3)
       const etaMin = Math.ceil(etaSeconds / 60)
       setEtaMinutes(etaMin)
 
@@ -269,10 +273,14 @@ export function UploadPage({ onBack, onSuccess }: Props) {
           <div className="upload-status">
             <div className="spinner" />
             <h3>📖 Processando seu livro...</h3>
-            <p>Estamos indexando <strong>{pdfPageCount || 'as páginas'}</strong> páginas no Professor IA.</p>
+            <p>Estamos indexando <strong>{pdfPageCount || '~100'}</strong> páginas no Professor IA.</p>
             <div className="eta-box">
               <strong>⏱️ Pronto em ~{etaMinutes} minuto{etaMinutes > 1 ? 's' : ''}</strong>
-              <small>Você pode ficar aqui, ou voltar à biblioteca e atualizar — o livro <strong>aparecerá sozinho</strong> quando terminar.</small>
+              <small>
+                <strong>Pode fechar esta aba e voltar depois.</strong> Quando o livro terminar, ele
+                aparece sozinho na sua biblioteca — basta atualizar a página da biblioteca.
+                Pra livros grandes (&gt;300 páginas), pode levar até 30 min.
+              </small>
             </div>
             <div className="processing-steps">
               <div className="step done">✓ PDF salvo com segurança</div>

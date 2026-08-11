@@ -8,9 +8,14 @@ import json, os, re, subprocess, time, traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 from datetime import datetime
 import threading
 import base64
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # --- Config ---
 SUPABASE_ENV = {}
@@ -21,6 +26,22 @@ for line in Path('/root/.hermes/secrets/leitor-supabase.env').read_text().splitl
 
 SUPABASE_URL = SUPABASE_ENV.get('SUPABASE_URL', '')
 SUPABASE_SR = SUPABASE_ENV.get('SUPABASE_SERVICE_ROLE', '')
+
+# SMTP config (Gmail app password — opcional; se faltar, pula notificação)
+SMTP_ENV = {}
+smtp_env_path = Path('/root/.hermes/secrets/leitor-smtp.env')
+if smtp_env_path.exists():
+    for line in smtp_env_path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith('#') and '=' in line:
+            SMTP_ENV[line.split('=', 1)[0]] = line.split('=', 1)[1]
+SMTP_HOST = SMTP_ENV.get('SMTP_HOST', '')
+SMTP_PORT = int(SMTP_ENV.get('SMTP_PORT', '587'))
+SMTP_USER = SMTP_ENV.get('SMTP_USER', '')
+SMTP_PASS = SMTP_ENV.get('SMTP_PASS', '')
+SMTP_FROM_EMAIL = SMTP_ENV.get('SMTP_FROM_EMAIL', SMTP_USER)
+SMTP_FROM_NAME = SMTP_ENV.get('SMTP_FROM_NAME', 'Leitor Inteligente')
+APP_URL = SMTP_ENV.get('APP_URL', 'https://preview.automacaojs.us/leitor-inteligente')
 
 UPLOAD_TMP_PREFIX = 'tmp/'  # PDFs sendo processados ficam em {user_id}/tmp/...
 UPLOAD_FINAL_PREFIX = ''    # Quando processado, move pra {user_id}/{ebook_id}/
@@ -69,18 +90,114 @@ def slugify(text: str) -> str:
     return text[:60] or 'livro'
 
 
+def get_user_email(user_id: str) -> str | None:
+    """Busca email do user no Supabase Auth admin. Retorna None se falhar."""
+    try:
+        req = Request(
+            f'{SUPABASE_URL}/auth/v1/admin/users/{user_id}',
+            headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+            method='GET',
+        )
+        with urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+            return data.get('email')
+    except Exception as e:
+        print(f'[upload] get_user_email falhou: {e}', flush=True)
+        return None
+
+
+def send_book_ready_email(to_email: str, ebook_title: str, ebook_slug: str, page_count: int) -> bool:
+    """Envia email 'Seu livro X tá pronto' via SMTP Gmail. Retorna True se enviou."""
+    if not SMTP_HOST or not SMTP_USER or not SMTP_PASS:
+        print(f'[upload] SMTP não configurado, pulando email', flush=True)
+        return False
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = f'📚 "{ebook_title}" tá pronto no Leitor Inteligente!'
+        msg['From'] = f'{SMTP_FROM_NAME} <{SMTP_FROM_EMAIL}>'
+        msg['To'] = to_email
+
+        text = f"""Oi!
+
+Seu livro "{ebook_title}" ({page_count} páginas) terminou de ser processado
+e já tá disponível na sua biblioteca.
+
+Acesse agora:
+{APP_URL}/#/library
+
+Bons estudos,
+Equipe Leitor Inteligente
+"""
+        html = f"""<!DOCTYPE html>
+<html><body style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+<h2 style="color: #52c1a6;">📚 Seu livro tá pronto!</h2>
+<p>Oi!</p>
+<p>O livro <strong>{ebook_title}</strong> ({page_count} páginas) terminou de ser processado e já tá disponível na sua biblioteca.</p>
+<p style="margin: 30px 0;">
+  <a href="{APP_URL}/#/library" style="background: #52c1a6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block;">
+    Abrir minha biblioteca →
+  </a>
+</p>
+<p style="color: #777; font-size: 14px;">Bons estudos,<br>Equipe Leitor Inteligente</p>
+</body></html>"""
+
+        msg.attach(MIMEText(text, 'plain', 'utf-8'))
+        msg.attach(MIMEText(html, 'html', 'utf-8'))
+
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as s:
+            s.starttls(context=ctx)
+            s.login(SMTP_USER, SMTP_PASS)
+            s.sendmail(SMTP_FROM_EMAIL, [to_email], msg.as_string())
+        print(f'[upload] Email enviado pra {to_email}', flush=True)
+        return True
+    except Exception as e:
+        print(f'[upload] ERRO email: {e}', flush=True)
+        traceback.print_exc()
+        return False
+
+
 # --- Pipeline de processamento ---
 def detect_scanned(pdf_path: str) -> bool:
-    """PDF é escaneado se as 3 primeiras páginas têm < 200 chars de texto."""
+    """PDF é escaneado se a média de chars por página é < 200.
+
+    IMPORTANTE: usa extração do doc INTEIRO + divide por page count, porque
+    `pdftotext -f X -l Y` retorna vazio em alguns PDFs (bug do poppler com
+    PDFs de origem iText/pdftk como '21 dias para curar...' 132p).
+    Sem esse fix, livros com texto seriam classificados como escaneados
+    e o OCR (lento + pode garble) rodaria à toa.
+    """
     try:
         result = subprocess.run(
-            ['pdftotext', '-f', '1', '-l', '3', pdf_path, '-'],
+            ['pdftotext', pdf_path, '-'],
             capture_output=True, text=True, timeout=15
         )
-        avg_chars = len(result.stdout.strip()) / 3
+        total_chars = len(result.stdout.strip())
+        page_count = get_real_page_count(pdf_path)
+        if page_count <= 0:
+            # Sem page count, fallback conservador: se tem > 1000 chars totais,
+            # provavelmente tem texto. Caso contrário, tenta OCR.
+            return total_chars < 1000
+        avg_chars = total_chars / page_count
         return avg_chars < MIN_TEXT_PER_PAGE_CHARS
     except Exception:
         return False
+
+
+def get_real_page_count(pdf_path: str) -> int:
+    """Extrai contagem REAL de páginas via pdfinfo (poppler-utils).
+    Mais confiável que regex no frontend. Retorna 0 se falhar."""
+    try:
+        result = subprocess.run(
+            ['pdfinfo', pdf_path],
+            capture_output=True, text=True, timeout=15
+        )
+        for line in result.stdout.splitlines():
+            if line.startswith('Pages:'):
+                return int(line.split(':', 1)[1].strip())
+    except Exception as e:
+        print(f'[upload] pdfinfo falhou: {e}', flush=True)
+    return 0
 
 
 def run_ocr(input_pdf: str, output_pdf: str) -> bool:
@@ -188,6 +305,15 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
                 print(f'[upload-job] OCR falhou, usando original', flush=True)
                 process_pdf = raw_pdf
         print(f'[upload-job] PDF lido em {time.time()-t0:.1f}s (escaneado={is_scanned})', flush=True)
+
+        # 2b. Extrai contagem REAL de páginas via pdfinfo (sobrescreve total_pages do frontend)
+        real_pages = get_real_page_count(process_pdf)
+        if real_pages > 0:
+            old_total = total_pages
+            total_pages = real_pages
+            print(f'[upload-job] total_pages real via pdfinfo: {real_pages} (frontend disse {old_total})', flush=True)
+        else:
+            print(f'[upload-job] pdfinfo falhou, mantendo total_pages do frontend: {total_pages}', flush=True)
 
         # 3. Extrai páginas
         pages = extract_pages(process_pdf)
@@ -335,6 +461,15 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
         except Exception as e:
             print(f'[upload-job] ERRO user_library: {e}', flush=True)
             raise
+
+        # 10b. Notificação por email (Path B) — em thread daemon pra não bloquear
+        def _send_email():
+            user_email = get_user_email(user_id)
+            if not user_email:
+                print(f'[upload-job] sem email pra user={user_id}, pulando', flush=True)
+                return
+            send_book_ready_email(user_email, title, ebook_id, len(pages))
+        threading.Thread(target=_send_email, daemon=True).start()
 
         # 11. Limpa tmp
         try:

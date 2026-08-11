@@ -1,163 +1,217 @@
-# Leitor Inteligente — PWA de Leitura com Professor IA
+# 📚 Leitor Inteligente
 
-PWA que permite ler livros (PDF) e perguntar ao **Professor IA** sobre o conteúdo página por página, capítulo por capítulo, ou por busca semântica (RAG).
-
-**Stack:** Vite + React 19 + TypeScript (frontend) · Python BaseHTTP (6 microserviços) · Supabase (Postgres + Auth + Storage) · FastEmbed BGE-small-en (embeddings)
+> Plataforma de leitura digital com RAG (Retrieval-Augmented Generation), Professor IA por livro, biblioteca pessoal e checkout dinâmico via Asaas.
 
 ---
 
-## 🏗️ Arquitetura
+## ✨ Status atual (ago/2026)
+
+| Funcionalidade | Status |
+|---|---|
+| Login Google (Supabase Auth) | ✅ Funcionando |
+| Catálogo de ebooks | ✅ 5 livros + 1 teste |
+| Loja + Checkout dinâmico Asaas | ✅ Funcionando |
+| Webhook Asaas (libera automática) | ✅ Funcionando |
+| Biblioteca pessoal por usuário | ✅ Funcional |
+| RAG Professor IA (O Poder do Hábito) | ✅ Funcionando |
+| Google Sheets export | ✅ Funcional |
+| 1 SITE entry point | ✅ (preview.automacaojs.us/leitor-inteligente) |
+| Webhook callback (redirect auto) | ⚠️ Sandbox rejeita (domínio) |
+| Pagamentos Cakto | ⚠️ Bloqueado pelo Cloudflare |
+
+---
+
+## 🛠 Stack
+
+### Frontend
+- **Vite** + **React** + **TypeScript**
+- **Tailwind CSS** (utility classes via global.css)
+- **Supabase** (`@supabase/supabase-js`) — auth + DB + storage
+- **PDF.js** — leitor no browser
+- **lucide-react** — ícones
+
+### Backend
+- **Flask** (Python 3.11+) — payment server
+- **Asaas API** (`api-sandbox.asaas.com`) — gateway de pagamento
+- **Supabase REST** (`/rest/v1`) — DB pra `user_library`, `purchases`, `profiles`
+
+### Infra
+- **Nginx** — serving static frontend (`/var/www/preview/leitor-inteligente/`)
+- **Cloudflare Tunnel** (`pay.automacaojs.us → :3019`) — webhook URL pública
+
+---
+
+## 📁 Estrutura
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                         FRONTEND (Vite/React)                    │
-│  /leitor-inteligente/  →  Static build servido via nginx 9121   │
-└──────────────────────────────────────────────────────────────────┘
-                                │
-                ┌───────────────┼────────────────┐
-                ▼               ▼                ▼
-        ┌──────────┐    ┌──────────┐    ┌──────────────┐
-        │ nginx    │    │ Supabase │    │ APIs Python  │
-        │ 9121     │    │ Postgres │    │ (6 microssv) │
-        │          │    │ + Storage│    │ portas       │
-        │          │    │ + Auth   │    │ 9130-9135    │
-        └──────────┘    └──────────┘    └──────────────┘
+leitor-inteligente/
+├── src/
+│   ├── App.tsx                  # Roteamento + state (Home/Loja/Biblioteca/Login)
+│   ├── pages/                   # HomePage, StorePage, LibraryPage, ReaderPage, LoginPage
+│   ├── components/              # CheckoutModal, BookCard, etc
+│   ├── domain/                  # catalog.ts, storage.ts, library.ts, habitBook.ts
+│   ├── lib/
+│   │   ├── supabase.ts          # Cliente Supabase + provider
+│   │   ├── supabaseStorage.ts   # addRemotePurchase, loadRemoteLibrary
+│   │   └── AuthContext.tsx      # signInWithGoogle
+│   └── styles/global.css
+├── api/
+│   ├── payment_server.py        # Flask app (porta 3019)
+│   ├── book_meta.py             # Helper de metadata de livros
+│   └── payments/
+│       ├── base.py              # PaymentProvider abstract class
+│       ├── asaas.py             # ✅ Provider ativo
+│       ├── cakto.py             # ⚠️  Background (bloqueado Cloudflare)
+│       └── __init__.py          # Factory: ASAAS > CAKTO
+├── public/                      # Static files
+├── dist/                        # Build output (gitignored)
+└── .env.example                 # Veja "Setup" abaixo
 ```
-
-### Frontend (Vite + React 19 + TS)
-- `src/App.tsx` — router hash-based (`#/library`, `#/reader/{slug}`, `#/upload`...)
-- `src/pages/ReaderPage.tsx` — visualizador PDF + chat Professor IA
-- `src/pages/UploadPage.tsx` — upload de PDF com ETA honesto + polling
-- `src/pages/LibraryPage.tsx` — livros do user (JOIN user_library + ebooks)
-- `src/pages/ProfessorPage.tsx` — chat standalone por slug do livro
-- `src/pages/AdminPage.tsx` — admin: ver catálogo, reset library
-- `src/lib/supabaseStorage.ts` — bridge entre Storage layer e Supabase
-- `src/lib/AuthContext.tsx` — auth Supabase (magic link)
-
-### Backend (6 microserviços Python `BaseHTTPRequestHandler`)
-
-| Porta | Serviço | Responsabilidade |
-|-------|---------|------------------|
-| 9130  | `server.py` | **Hardcoded "O Poder do Hábito"** — system prompt legado |
-| 9131  | `semantic_server.py` | Genérico — usa `bookSlug` do body pra escolher system prompt |
-| 9132  | `streak_server.py` | Tracking de streak diário de leitura |
-| 9133  | `signed_url_server.py` | Gera signed URL temporária pra um ebook que user comprou |
-| 9134  | `upload_book.py` | Pipeline completo: upload → OCR → extract → embeddings → user_library |
-| 9135  | `fabricante_server.py` | Específico do **Fabricante de Lágrimas** (653 páginas, tem `detect_explicit_page`) |
-
-Cada serviço roda como **systemd unit** (`/etc/systemd/system/leitor-*-api.service`).
-
-### Banco (Supabase Postgres)
-
-| Tabela | Função |
-|--------|--------|
-| `ebooks` | Catálogo: id, slug, title, author, cover_url, pdf_storage_path, total_pages, owner_user_id, is_published |
-| `ebook_pages` | Texto página-por-página + embedding BGE 384d (`vector(384)`) |
-| `user_library` | Compras do user (user_id, ebook_id, payment_status) |
-| `progress` | Última página lida por user por livro |
-
-**RLS** ativo em todas as tabelas → user só vê/processa seus próprios dados.
-
-### Storage (Supabase Storage)
-
-- Bucket `ebooks`:
-  - `{user_id}/tmp/{ts}_{filename}.pdf` — uploads em processamento
-  - `{user_id}/{ebook_id}/livro.pdf` — PDF final do ebook (lido pelo Reader)
 
 ---
 
 ## 🚀 Como rodar
 
-### Frontend
+### 1. Instalar deps
 
 ```bash
 cd /root/projetos/leitor-inteligente
 npm install
-npm run dev          # dev server com HMR
-npm run build        # build de produção
-sudo rsync -a --delete dist/ /var/www/preview/leitor-inteligente/
 ```
 
-### Backend (cada serviço em seu terminal)
+### 2. Configurar .env
 
 ```bash
-python3 api/fabricante_server.py   # 9135
-python3 api/semantic_server.py    # 9131
-python3 api/server.py             # 9130
-python3 api/streak_server.py      # 9132
-python3 api/signed_url_server.py  # 9133
-python3 api/upload_book.py        # 9134
+cp .env.example .env.local
+# Editar .env.local com seus valores reais
 ```
 
-### Variáveis de ambiente
+Ou, no VPS Isaías: edite `/root/.hermes/secrets/leitor-supabase.env` (caminho hardcoded no `api/book_meta.py`).
 
-Frontend (Vite — `import.meta.env`):
-- `VITE_SUPABASE_URL`
-- `VITE_SUPABASE_ANON_KEY`
+### 3. Supabase
 
-Backend (Python — `/root/.hermes/secrets/leitor-supabase.env`):
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE`
+Execute a migration em `supabase/migrations/` no dashboard:
+```sql
+-- Cria tabelas: profiles, ebooks, user_library, purchases
+-- (schema versionado pelas migrations)
+```
 
-Copie `.env.example` para `.env.production` e preencha.
+Veja [`supabase/README.md`](supabase/README.md) pra detalhes do schema.
+
+### 4. Build + deploy
+
+```bash
+npm run build
+sudo cp -r dist/* /var/www/preview/leitor-inteligente/
+```
+
+### 5. Iniciar payment server
+
+```bash
+cd /root/projetos/leitor-inteligente
+python3 api/payment_server.py
+```
+
+Servidor sobe em `http://0.0.0.0:3019`. Túnel Cloudflare expõe em `https://pay.automacaojs.us`.
 
 ---
 
-## 🐛 Pitfalls históricos (não repetir)
+## 💳 Integração Asaas
 
-| # | Sintoma | Causa | Fix |
-|---|---------|-------|-----|
-| 70 | nginx 502 | Conflito docker-proxy Coolify em 9121 | Usar `preview-only.conf` separada |
-| 71 | MIME `text/html` em `.mjs` | `types{}` em server block **sobrescreve** mime.types | Usar **http block** |
-| 72 | ExecReload não aceita `-g` | systemd limitation | Só `nginx -s reload` |
-| 73 | Texto bichado tipo `cri­a­da` | `pdftotext -layout` insere ~166k **soft hyphens** U+00AD | `re.sub(r'[\u00AD]', '', text)` + juntar hifens ANTES de embeddings |
-| 74 | Chat cita livro errado | Frontend mandava URL hardcoded `/semantic-api/` (porta 9131 genérica) | Sempre usar `/<book.id>/semantic-api/...` (inclui slug) |
-| 75 | Upload `URL can't contain control characters` | Filename com acentos rejeitado pelo Storage | NFKD → ascii → `re.sub(r'[^a-zA-Z0-9._-]', '_', fn)` |
-| 76 | `fastembed` ImportError | Não instalado no venv do Hermes | `pip install fastembed` |
-| 77 | `multiprocessing RuntimeError` | fastembed parallel sem `if __name__ == '__main__'` | Envolver em main() + `parallel=0` |
-| 78 | Livro da biblioteca abre vazio | `activeBook = CATALOG.find(...)` não cobre livros uploaded | Tentar catalog → fallback Supabase via `loadEbookBySlug(slug)` → tela de erro amigável |
+### Endpoints
+
+- `POST /api/checkout/create` — Cria payment com `billingType: UNDEFINED` (mostra todas opções)
+- `POST /api/asaas/webhook` — Recebe `PAYMENT_RECEIVED` + `PAYMENT_CONFIRMED`
+- `GET /api/payment/health` — Health check
+- `POST /api/payment/simulate-flow` — Simula fluxo completo (modo dev)
+
+### Sandbox vs Produção
+
+| Recurso | Sandbox | Produção |
+|---|---|---|
+| URL API | `api-sandbox.asaas.com/v3` | `api.asaas.com/v3` |
+| Callback (redirect) | ❌ Bloqueado por whitelist | ✅ Funciona (com domínio cadastrado) |
+| Webhook (liberação) | ✅ Funciona | ✅ Funciona |
+| Cartão de teste | `4444 4444 4444 4444` CVV `123` validade `12/30` | N/A |
+
+### Cadastro de webhook no Asaas
+
+```bash
+curl -X POST -H "access_token: $ASAAS_API_KEY" \
+  https://api-sandbox.asaas.com/v3/webhooks \
+  -d '{
+    "name": "Leitor Inteligente",
+    "url": "https://pay.automacaojs.us/api/asaas/webhook",
+    "email": "seu@email.com",
+    "sendType": "SEQUENTIALLY",
+    "events": ["PAYMENT_RECEIVED","PAYMENT_CONFIRMED","PAYMENT_REFUNDED","PAYMENT_OVERDUE"]
+  }'
+```
+
+Salve o `authToken` retornado em `ASAAS_WEBHOOK_TOKEN` no `.env`.
+
+### Cadastro de domínio (pra callback)
+
+Em produção, **obrigatório**:
+1. Asaas sandbox → Minha Conta → aba Informações → campo Site/Domínio
+2. Cadastrar: `https://preview.automacaojs.us` (domínio raiz, sem path)
+3. Aguardar ~5 min propagar
 
 ---
 
-## 📂 Estrutura de pastas
+## 🧩 Como adicionar novo ebook
 
+### 1. Cadastrar no Supabase
+
+```sql
+INSERT INTO ebooks (slug, title, author, description, price_cents, total_pages, is_published)
+VALUES ('meu-livro', 'Meu Livro', 'Autor', 'Descrição...', 2990, 200, true);
 ```
-leitor-inteligente/
-├── api/                          # Microserviços Python
-│   ├── server.py                 # 9130 - hardcoded "O Poder do Hábito"
-│   ├── semantic_server.py        # 9131 - genérico (bookSlug no body)
-│   ├── streak_server.py          # 9132 - streak diário
-│   ├── signed_url_server.py      # 9133 - signed URL Supabase Storage
-│   ├── upload_book.py            # 9134 - pipeline upload completo
-│   ├── fabricante_server.py      # 9135 - Fabricante de Lágrimas (específico)
-│   └── book_meta.py              # Helper compartilhado - metadata + system prompts parametrizados
-├── src/
-│   ├── App.tsx                   # Router principal
-│   ├── main.tsx                  # Entry point
-│   ├── components/               # UI reutilizável
-│   ├── domain/                   # Lógica de negócio
-│   ├── lib/                      # Wrappers externos
-│   ├── pages/                    # Páginas principais
-│   ├── styles/global.css         # Tema dark mobile-first
-│   └── vite-env.d.ts
-├── data/                         # Cache local de indexação (NÃO versionado)
-├── public/books/                 # PDFs estáticos
-├── tests/                        # Vitest
-└── README.md                     # Este arquivo
+
+### 2. Adicionar no CATALOG (`src/domain/catalog.ts`)
+
+```typescript
+{
+  id: 'meu-livro',
+  title: 'Meu Livro',
+  author: 'Autor',
+  description: 'Descrição...',
+  price: 2990,
+  totalPages: 200,
+  cover: '',
+  highlights: ['...'],
+  chunks: [],  // RAG real chunks (opcional)
+},
+```
+
+### 3. Build + deploy
+
+```bash
+npm run build
+sudo cp -r dist/* /var/www/preview/leitor-inteligente/
 ```
 
 ---
 
 ## 🔐 Segurança
 
-- **RLS** ativo no Supabase: cada user só vê seus próprios livros/progresso.
-- **JWT** Supabase validado nas APIs Python via decode do payload (sem round-trip).
-- **Signed URLs** com TTL de 60min.
-- **Service Role key** usada apenas nas APIs Python (nunca no frontend).
-- **Filenames** sanitizados para ASCII puro.
+- **Nenhum segredo** deve ser commitado. Use `.env.local` ou `/root/.hermes/secrets/`.
+- **Supabase service_role key** é SÓ pra backend (NUNCA pro frontend).
+- **Asaas webhook token** valida cada request via header `asaas-access-token`.
+- **Row Level Security (RLS)** ativo no Supabase: usuários só veem suas próprias compras.
+
+---
+
+## 📞 Contato
+
+- Repo: https://github.com/Jisaiaslima35/leitor-inteligente
+- Site em produção: https://preview.automacaojs.us/leitor-inteligente/
+- Backend (túnel): https://pay.automacaojs.us
+- Supabase project: `yfnzlowtgnlqizobnslh` (anon — público)
+- Domínio Asaas (sandbox): `isaiassilva356@gmail.com`
 
 ---
 
 ## 📜 Licença
 
-Proprietary — © Isaías Lima / AutomaçãoJS
+Projeto proprietário. Não distribua sem autorização.
