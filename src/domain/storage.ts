@@ -96,13 +96,21 @@ export async function buyBookRemote(book: Book, state: LibraryState): Promise<Li
       })
       const data = await r.json()
       if (data.ok && data.checkout_url) {
-        // Redireciona pro checkout Asaas. Quando o webhook confirmar,
-        // pollUntilLibraryHas detecta e volta pro Leitor automaticamente.
+        // Abre checkout em nova aba pra manter a aba original viva
+        // rodando pollUntilLibraryHas. window.location.href mataria o
+        // JS antes do polling rodar.
         const slug = book.id
         const returnUrl = 'https://preview.automacaojs.us/leitor-inteligente/#/library?from=asaas&book=' + encodeURIComponent(slug)
-        pollUntilLibraryHas(slug, returnUrl, 60000).catch(() => {})
-        window.location.href = data.checkout_url
-        return next  // usuário vai voltar depois do pagamento
+        const checkoutTab = window.open(data.checkout_url, '_blank', 'noopener,noreferrer')
+        if (!checkoutTab) {
+          // Popup bloqueado — cai pro redirect antigo como fallback.
+          // Sem aba pra fechar, passa null no checkoutTab.
+          pollUntilLibraryHas(slug, null, returnUrl, 60000).catch(() => {})
+          window.location.href = data.checkout_url
+          return next
+        }
+        pollUntilLibraryHas(slug, checkoutTab, returnUrl, 60000).catch(() => {})
+        return next  // usuário volta via polling quando webhook liberar
       }
       console.error('[payment] erro:', data.error)
       return state
@@ -148,15 +156,18 @@ export async function fetchRemoteProgress(): Promise<ProgressState | null> {
 
 /**
  * Monitora se um ebook específico foi liberado na user_library.
- * Usado após redirecionar pro Asaas checkout — quando o webhook do Asaas
- * confirmar o pagamento, o item aparece na user_library.
+ * Roda na aba original (a que abriu checkout em window.open).
+ * Quando o webhook do Asaas libera o item na user_library:
+ *   1. fecha a aba de checkout (se ainda aberta)
+ *   2. redireciona a aba original pra `redirectUrl` (Biblioteca)
  *
- * Quando detectar, redireciona o user de volta pro Leitor automaticamente.
+ * `timeoutMs` default = 5min. Asaas sandbox às vezes demora 30-90s.
  */
 export async function pollUntilLibraryHas(
   bookSlug: string,
+  checkoutTab: Window | null,
   redirectUrl: string,
-  timeoutMs: number = 60000,
+  timeoutMs: number = 300000,
 ): Promise<boolean> {
   if (!SUPABASE_READY) return false
   const { data: session } = await supabase.auth.getSession()
@@ -167,7 +178,8 @@ export async function pollUntilLibraryHas(
     await new Promise((r) => setTimeout(r, 3000))
     const lib = await loadRemoteLibrary()
     if (lib && lib.purchases.some((p) => p.bookId === bookSlug)) {
-      // Livro liberado! Redireciona de volta pro Leitor
+      // Livro liberado! Fecha checkout (se ainda aberto) e volta pra Biblioteca
+      try { checkoutTab?.close() } catch { /* aba já fechada — ignora */ }
       window.location.href = redirectUrl
       return true
     }
