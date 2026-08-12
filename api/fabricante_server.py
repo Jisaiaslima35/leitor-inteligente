@@ -9,6 +9,11 @@ from urllib.request import Request, urlopen
 from functools import lru_cache
 sys.path.insert(0, str(Path(__file__).parent))
 from book_meta import get_book_meta, build_system_prompt  # noqa: E402
+from semantic_helpers import (  # noqa: E402
+    detect_explicit_page,
+    is_current_page_intent,
+    lexical_page_lookup_supabase,
+)
 
 SUPABASE_ENV = {}
 for line in Path('/root/.hermes/secrets/leitor-supabase.env').read_text().splitlines():
@@ -56,6 +61,20 @@ def detect_explicit_page(question: str):
             return n
     return None
 
+def is_current_page_intent(question: str) -> bool:
+    """Detecta perguntas que pedem descrição/explicação da página ATUAL
+    (ex.: 'essa página', 'este trecho', 'me explica o que tô lendo')."""
+    q = question.lower()
+    triggers = [
+        'essa página', 'esta página', 'essa pagina', 'esta pagina',
+        'página atual', 'pagina atual', 'página que eu tô', 'pagina que eu to',
+        'página que to', 'o que eu tô lendo', 'o que to lendo',
+        'tô lendo', 'to lendo', 'me explica', 'essa parte', 'esta parte',
+        'esse trecho', 'este trecho', 'resuma', 'resumo',
+        'essa cena', 'esta cena', 'aqui',
+    ]
+    return any(t in q for t in triggers)
+
 def lexical_page_lookup(page_num: int, k: int = 3):
     try:
         pages = json.loads(Path(PAGES_JSON).read_text(encoding='utf-8'))
@@ -76,13 +95,21 @@ def lexical_page_lookup(page_num: int, k: int = 3):
                 })
     return out[:k]
 
-def semantic_retrieve(question: str, k: int = 5):
+def semantic_retrieve(question: str, current_page: int = 0, k: int = 5):
+    # 1. Pergunta cita página explícita → lookup exato
     explicit = detect_explicit_page(question)
     if explicit:
         hits = lexical_page_lookup(explicit)
         if hits:
             return hits
 
+    # 2. Pergunta é sobre a página ATUAL (sem número) → lookup exato na current_page
+    if current_page and current_page >= 1 and is_current_page_intent(question):
+        hits = lexical_page_lookup(current_page)
+        if hits:
+            return hits
+
+    # 3. Fallback: embedding semântico
     q_emb = list(cached_embed(question))
     payload = {
         'query_embedding': q_emb,
@@ -111,7 +138,7 @@ def hermes_key() -> str:
 KEY = hermes_key()
 
 def semantic_answer(question: str, current_page: int = 1, k: int = 5):
-    hits = semantic_retrieve(question, k)
+    hits = semantic_retrieve(question, current_page, k)
     sources = []
     for h in hits:
         sources.append({
@@ -188,14 +215,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/health':
-            self.send_json(200, {
-                'status': 'ok',
-                'mode': 'semantic',
-                'slug': BOOK_SLUG,
-                'embedder': EMBED_MODEL,
-                'dim': EMBED_DIM,
-                'pages': 653,
-            })
+            # Conta páginas reais do JSON local (pode mudar quando reindexar)
+                    try:
+                        pages_count = len(json.loads(Path(PAGES_JSON).read_text(encoding='utf-8')))
+                    except Exception:
+                        pages_count = len(json.loads(PAGES_JSON))
+                    self.send_json(200, {
+                        'status': 'ok',
+                        'mode': 'semantic',
+                        'slug': BOOK_SLUG,
+                        'embedder': EMBED_MODEL,
+                        'dim': EMBED_DIM,
+                        'pages': pages_count,
+                    })
         else:
             self.send_json(404, {'error': 'not found'})
 

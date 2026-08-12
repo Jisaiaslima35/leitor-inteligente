@@ -9,6 +9,11 @@ from urllib.request import Request, urlopen
 from functools import lru_cache
 sys.path.insert(0, str(Path(__file__).parent))
 from book_meta import get_book_meta, build_system_prompt  # noqa: E402
+from semantic_helpers import (  # noqa: E402
+    detect_explicit_page,
+    is_current_page_intent,
+    lexical_page_lookup_supabase,
+)
 
 # --- Config ---
 SUPABASE_ENV = {}
@@ -130,27 +135,25 @@ def lexical_page_lookup(page_num: int, book_slug: str = BOOK_SLUG, k: int = 3):
                 })
     return out[:k]
 
-def detect_explicit_page(question: str):
-    """Detecta 'página N' na pergunta."""
-    m = re.search(r'p[áa]gina\s+(\d+)', question, re.IGNORECASE)
-    if m:
-        return int(m.group(1))
-    m = re.search(r'\bp\s*(\d{1,3})\b', question, re.IGNORECASE)
-    if m:
-        n = int(m.group(1))
-        if 1 <= n <= 500:
-            return n
-    return None
-
-def semantic_retrieve(question: str, book_slug: str = BOOK_SLUG, k: int = 5):
-    # Se pergunta menciona página explícita, usa lexical direto (evita alucinação)
+def semantic_retrieve(question: str, book_slug: str = BOOK_SLUG, current_page: int = 0, k: int = 5):
+    # 1. Pergunta cita página explícita → lookup exato
     explicit = detect_explicit_page(question)
     if explicit:
-        hits = lexical_page_lookup(explicit, book_slug)
+        hits = lexical_page_lookup_supabase(explicit, book_slug, SUPABASE_URL, SUPABASE_SR)
         if hits:
-            print(f'[semantic-ask] lexical_page_lookup (página explícita) retornou {len(hits)} hits', flush=True)
+            print(f'[semantic-ask] lexical (página explícita {explicit}) → {len(hits)} hits', flush=True)
             return hits
 
+    # 2. Pergunta é sobre a página ATUAL (sem citar número) → lookup exato na current_page
+    # Pitfall: sem isso, embedding search retornava páginas aleatórias com palavras
+    # similares ("essa página", "to lendo") → LLM alucinava resumo.
+    if current_page and current_page >= 1 and is_current_page_intent(question):
+        hits = lexical_page_lookup_supabase(current_page, book_slug, SUPABASE_URL, SUPABASE_SR)
+        if hits:
+            print(f'[semantic-ask] lexical (página atual {current_page}) → {len(hits)} hits', flush=True)
+            return hits
+
+    # 3. Fallback: embedding semântico
     q_emb = list(cached_embed(question))
     print(f'[semantic-ask] embedding dim={len(q_emb)}; RPC match_ebook_slug="{book_slug}"', flush=True)
     payload = {
@@ -182,7 +185,7 @@ def hermes_key() -> str:
 KEY = hermes_key()
 
 def semantic_answer(question: str, current_page: int = 1, book_slug: str = BOOK_SLUG, k: int = 5):
-    hits = semantic_retrieve(question, book_slug, k)
+    hits = semantic_retrieve(question, book_slug, current_page, k)
     sources = []
     for h in hits:
         ch_title = h.get('chapter_title') or ''

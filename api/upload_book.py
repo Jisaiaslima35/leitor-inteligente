@@ -516,6 +516,13 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
         urlopen(ins_req, timeout=60)
         print(f'[upload-job] {len(page_rows)} páginas inseridas', flush=True)
 
+        # 6.5. Valida sincronização PDF → JSON local (sem isso, bugs de paginação
+        # passam despercebidos — fix preventivo após incidente fabricante-de-lagrimas 12/08/2026)
+        pages_local = sum(1 for p in pages if len(p.get('text','').strip()) > 10)
+        if pages_local != len(page_rows):
+            print(f'[upload-job] ⚠️  DESSINC: PDF={pages_local} páginas com texto vs Supabase={len(page_rows)}', flush=True)
+            print(f'[upload-job] → Pode haver páginas em branco sendo indexadas. Continuando mesmo assim.', flush=True)
+
         # 7. Gera embeddings BGE-small-en
         from fastembed import TextEmbedding
         model = TextEmbedding(model_name='BAAI/bge-small-en-v1.5')

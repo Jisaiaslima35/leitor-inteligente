@@ -99,3 +99,8 @@ docker-compose*.yml
 
 # Local deploy logs
 deploy.log
+
+# Generated content (PDF + extracted text — regeneráveis via fastembed_pages.py)
+source.pdf
+data/*-pages.json
+data/*-pages.json.bak*
