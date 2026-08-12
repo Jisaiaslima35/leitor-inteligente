@@ -9,10 +9,11 @@ interface Props {
   pdfPath: string
   page: number
   onPageChange: (page: number) => void
+  onInternalNav?: (page: number) => void
   scale?: number
 }
 
-export function PdfViewer({ pdfPath, page, onPageChange, scale = 1.2 }: Props) {
+export function PdfViewer({ pdfPath, page, onPageChange, onInternalNav, scale = 1.2 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const docRef = useRef<PDFDocumentProxy | null>(null)
   const renderTaskRef = useRef<{ cancel: () => void } | null>(null)
@@ -56,7 +57,7 @@ export function PdfViewer({ pdfPath, page, onPageChange, scale = 1.2 }: Props) {
       const task = pageObj.render({ canvas, canvasContext: context, viewport })
       renderTaskRef.current = task
       await task.promise
-      if (!cancelled) onPageChange(target)
+      if (!cancelled && onInternalNav) onInternalNav(target)
     }
     if (status === 'ready') {
       render().catch((err) => console.error('Render error', err))
@@ -64,7 +65,7 @@ export function PdfViewer({ pdfPath, page, onPageChange, scale = 1.2 }: Props) {
     return () => {
       cancelled = true
     }
-  }, [page, scale, status, onPageChange])
+  }, [page, scale, status, onInternalNav])
 
   if (status === 'loading') {
     return <div className="pdf-canvas-wrap" style={{ color: 'white', textAlign: 'center', padding: 24 }}>Carregando PDF…</div>

@@ -8,7 +8,6 @@ import { ShareActions } from '../components/ShareActions'
 import type { RagSource } from '../domain/rag'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
-
 type ChatRole = 'user' | 'ai'
 
 interface ChatMessage {
@@ -108,14 +107,38 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
   }, [book, progress, userId])
 
   const [page, setPage] = useState(initial)
-  useEffect(() => setPage(initial), [initial])
+  // Sincroniza page com initial APENAS quando o livro muda (não a cada
+  // mudança de progress, senão o onTrack sobrescreve a página atual
+  // com a inicial salva).
+  const lastBookIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (lastBookIdRef.current !== book.id) {
+      lastBookIdRef.current = book.id
+      setPage(initial)
+    }
+  }, [book.id, initial])
 
   const handlePageChange = (next: number) => {
-    if (next !== page) {
-      setPage(next)
-      onTrack(book, next)
+    const clamped = Math.min(Math.max(1, next), book.totalPages)
+    if (clamped !== page) {
+      setPage(clamped)
+      onTrack(book, clamped)
     }
   }
+
+  // Wrapper para o input de página (linha 246-252): quando o user digita
+  // um número e sai do campo, precisa chamar onTrack pra persistir.
+  const handlePageInputBlur = useCallback(() => {
+    onTrack(book, page)
+  }, [book, page, onTrack])
+
+  // Quando o PdfViewer terminar de renderizar a página inicial, NÃO
+  // chama onPageChange (que salvaria p1 sobre p40 salva). Só sinaliza
+  // que o render terminou. Se o user rolar para outra página dentro
+  // do PDF, ele usa onInternalNav (futuro).
+  const handleInternalNav = useCallback((next: number) => {
+    // noop por enquanto — render programático do React já cuida do page
+  }, [])
 
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -232,6 +255,18 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
     )
   }
 
+  // % de progresso e estimativa de tempo restante (Kindle-style)
+  // Assume 2 min por página (média Kindle) — ajustável por livro depois
+  const percent = book.totalPages > 0
+    ? Math.min(100, Math.round((page / book.totalPages) * 100))
+    : 0
+  const minutesPerPage = 2
+  const remainingPages = Math.max(0, book.totalPages - page)
+  const remainingMinutes = remainingPages * minutesPerPage
+  const remainingLabel = remainingMinutes < 60
+    ? `${remainingMinutes} min restantes`
+    : `${Math.floor(remainingMinutes / 60)}h ${remainingMinutes % 60}min restantes`
+
   return (
     <section>
       <div className="section-title">
@@ -239,7 +274,7 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
         <small>{book.author}</small>
       </div>
       <div className="pdf-toolbar">
-        <button className="icon-btn" onClick={() => setPage((p) => Math.max(1, p - 1))} aria-label="Página anterior">
+        <button className="icon-btn" onClick={() => handlePageChange(page - 1)} aria-label="Página anterior">
           <ChevronLeft size={18} />
         </button>
         <span className="page-label">Página</span>
@@ -249,17 +284,30 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
           max={book.totalPages}
           value={page}
           onChange={(e) => setPage(Math.min(book.totalPages, Math.max(1, Number(e.target.value) || 1)))}
+          onBlur={handlePageInputBlur}
         />
         <span className="page-label">de {book.totalPages}</span>
-        <button className="icon-btn" onClick={() => setPage((p) => Math.min(book.totalPages, p + 1))} aria-label="Próxima página">
+        <button className="icon-btn" onClick={() => handlePageChange(page + 1)} aria-label="Próxima página">
           <ChevronRight size={18} />
         </button>
+        <span className="page-progress-meta" aria-label="Progresso de leitura">
+          <strong>{percent}%</strong>
+          <span className="page-progress-time">· {remainingLabel}</span>
+        </span>
+      </div>
+
+      <div className="progress-bar-track" aria-hidden="true">
+        <div
+          className="progress-bar-fill"
+          style={{ width: `${percent}%` }}
+        />
       </div>
 
       <PdfViewer
         pdfPath={pdfUrl}
         page={page}
         onPageChange={handlePageChange}
+        onInternalNav={handleInternalNav}
         scale={1.3}
       />
 
