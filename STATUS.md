@@ -8,6 +8,82 @@
 
 ---
 
+## 🆕 Validação 12/08/2026 — Bug fix página + Kindle features (commit `fdbf8bf`)
+
+Isaías reportou: (1) ao parar na p40 e voltar, abria na p1; (2) sem barra de progresso; (3) pediu comparação com Kindle. Análise + fix abaixo.
+
+### Bug fix #83 (página reseta)
+- **Causa:** `PdfViewer.tsx:59` chamava `onPageChange(target)` após cada render. Combinado com `useEffect(() => setPage(initial), [initial])` no `ReaderPage`, qualquer mudança no `progress` re-disparava a sincronização e resetava pra p1.
+- **Fix:** novo callback `onInternalNav` (sinaliza "render terminou, não mexa"), separado de `onPageChange` (user pediu pra mudar). `useEffect [initial]` agora só roda quando `book.id` muda (`lastBookIdRef`). Botões prev/next e input agora chamam `onTrack` corretamente.
+
+### Kindle features adicionadas
+- Barra de progresso fina (4px, gradient) entre toolbar e canvas
+- `% concluído` no toolbar (ex: "23%")
+- Tempo restante estimado (assumindo 2min/página): "1h 12min restantes"
+
+---
+
+## 📊 Análise comparativa: Kindle vs Leitor Inteligente (parte de leitura)
+
+Pedida por Isaías 12/08 após o fix do bug da página. Baseado nas features públicas do Kindle App (X-Ray, Word Wise, Whispersync) e no estado atual do Leitor.
+
+### O que o Leitor tem **a mais** que o Kindle
+
+- **Professor IA contextual** — pergunta por página/capítulo/tema e recebe resposta com fontes (citação de páginas). Kindle não tem nada equivalente — X-Ray mostra termos mas não responde perguntas.
+- **Leitura por voz (TTS)** — botão "Volume2" lê qualquer resposta do Professor com Web Speech API. Kindle tem Audible mas é audiolivro separado, não TTS do ebook.
+- **Reconhecimento de voz (STT)** — microfone no chat → pergunta falada. Kindle não tem.
+- **Compartilhamento nativo** — ShareActions: copiar, WhatsApp, Facebook. Kindle exige highlights + share manual.
+- **Compra integrada via Asaas** — checkout dinâmico, webhook libera em ~5s. Kindle App só lê o que você comprou na Amazon Store.
+- **Biblioteca pessoal sincronizada via Supabase** — RLS por user, cada um vê só o que comprou. Kindle usa Whispersync mas é fechado, vendor-locked na Amazon.
+- **Upload do próprio ebook** — usuário faz upload do PDF e lê com o Professor IA. Kindle pessoal (Send to Kindle) aceita EPUB mas não tem RAG.
+- **Login via Google** — 1 clique. Kindle exige conta Amazon.
+
+### O que o Kindle tem **a mais** que o Leitor
+
+- **X-Ray** — lista de personagens, termos, lugares com índice e links. Leitor não tem.
+- **Word Wise** — definição inline de palavras difíceis pra crianças/LE. Leitor não tem.
+- **Whispersync** — sincroniza posição, highlights, notas entre celular/tablet/Kindle/eReader. Leitor sincroniza posição e tem `progress` no Supabase, MAS não tem highlights/notas persistentes ainda.
+- **Tradução instantânea** — toque numa palavra → tradução. Leitor não tem.
+- **Dicionário inline** — pop-up com definição ao tocar palavra. Leitor não tem.
+- **Fontes/Layout** — Kindle tem 10+ fontes, controle de margem/line-height/tamanho. Leitor tem scale 1.3 fixo no canvas.
+- **Themes** — light/sepia/dark/black (E-ink). Leitor tem tema dark/light global mas não dentro do reader.
+- **Highlights coloridos** — Kindle tem 4 cores + nota. Leitor tem comentários no chat mas não highlights visuais no PDF.
+- **Marcadores (bookmarks)** — Kindle tem marcadores com nome. Leitor tem só o número da página.
+- **Busca no texto** — Ctrl+F no Kindle. Leitor não tem (PDF.js não exposto).
+- **Indicador "tempo até fim do capítulo"** — Kindle mostra ao tocar topo. Leitor agora tem (commit fdbf8bf).
+
+### O que **ninguém** tem (gap de mercado)
+
+- **RAG multimodal** — Professor IA que entende não só texto mas figuras, gráficos, tabelas. Nem Kindle nem Leitor.
+- **Síntese de livro personalizado por objetivo** — "resuma em 5 pontos pra eu apresentar". Leitor tem `system_prompt` configurável mas é estático.
+- **Anotações colaborativas** — duas pessoas lendo o mesmo livro, trocando notas em tempo real. Buzz-like pra ebooks.
+- **Modo offline-first confiável** — Leitor já baixa o PDF, mas se a URL expirar (signed URL 60min) o user perde o acesso. Kindle tem offline nativo.
+
+### Roadmap prático (próximas 4-6 semanas, ordem de impacto)
+
+| # | Feature | Esforço | Impacto | Tipo |
+|---|---|---|---|---|
+| 1 | **Highlights coloridos no PDF** (clicar texto, escolher cor, persistir) | M | Alto | Kindle parity |
+| 2 | **Marcadores com nome** (não só número de página) | P | Alto | Kindle parity |
+| 3 | **Whispersync multi-device** (já tem 80% — Supabase já sincroniza) | P | Alto | Kindle parity |
+| 4 | **Busca no texto (Ctrl+F)** via PDF.js text layer | M | Médio | Kindle parity |
+| 5 | **Dicionário inline** (tocar palavra → definição) | M | Médio | Kindle parity |
+| 6 | **Fontes + temas** (font-family, sepia, dark/light/black) | M | Médio | Kindle parity |
+| 7 | **X-Ray lite** (lista personagens/lugares do livro via RAG) | G | Altíssimo | Diferencial |
+| 8 | **Tradução de palavras/frases** (Google Translate API) | P | Médio | Kindle parity |
+| 9 | **Modo offline** (cache PDF + Service Worker) | G | Alto | Kindle parity |
+| 10 | **RAG multimodal** (figuras, gráficos, tabelas) | GG | Diferencial enorme | Innovation |
+
+**P = Pequeno (1-2 dias), M = Médio (3-5 dias), G = Grande (1-2 semanas), GG = Muito grande (>2 semanas)**
+
+### Recomendação imediata (essa semana)
+
+Isaías, pelo teu estilo ("direto ao ponto", "coisa prática fácil"), recomendo começar por **#1 Highlights coloridos** + **#2 Marcadores com nome**. As duas são **P** de esforço, **Alto** de impacto, e colocam o Leitor visivelmente acima do Kindle pra quem curte estudar com marcação. Juntas: ~3 dias.
+
+Depois #3 Whispersync — **já tá 80% pronto** (Supabase já sincroniza `reading_progress`). Falta só: (a) tela de "outros devices" mostrando a posição em cada, (b) real-time channel pra detectar quando outro device abre o mesmo livro.
+
+---
+
 ## 🆕 Validação 12/08/2026 — Fabricante de Lágrimas (conta nova)
 
 Isaías criou conta **nova** (`operajose343@gmail.com`), foi direto pra **Minha Biblioteca** (vazia — nada comprado), voltou pra **Loja**, comprou **O Fabricante de Lágrimas** por R$ 19,99, foi pro Asaas Sandbox, pagou com cartão de teste (4444 4444 4444 4444), comprovante mostrou:
