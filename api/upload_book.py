@@ -214,6 +214,128 @@ def run_ocr(input_pdf: str, output_pdf: str) -> bool:
         return False
 
 
+# --- Marker-pdf fallback ---
+# Consome 4-6GB RAM. Pra não concorrer com outros serviços da VPS,
+# só 1 marker-pdf roda por vez. Usa fcntl.flock (lock advisory do kernel,
+# atômico entre processos). Lock libera automaticamente se processo morre.
+MARKER_LOCK_FILE = '/tmp/marker-pdf.lock'
+MARKER_SCRIPT = '/root/.hermes/profiles/leitor-inteligente/skills/productivity/ocr-and-documents/scripts/extract_marker.py'
+MARKER_LOCK_TIMEOUT_SEC = 1800  # 30min max esperando
+
+class MarkerLock:
+    """Lock advisory em arquivo. Adquirir = fcntl.flock(LOCK_EX)."""
+    def __init__(self, path: str = MARKER_LOCK_FILE, timeout: int = MARKER_LOCK_TIMEOUT_SEC):
+        self.path = path
+        self.timeout = timeout
+        self.fd = None
+    def __enter__(self):
+        import fcntl
+        self.fd = open(self.path, 'w')
+        t0 = time.time()
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.fd.write(f'{os.getpid()} {time.time()}\n')
+                self.fd.flush()
+                print(f'[marker-lock] ADQUIRIDO por pid={os.getpid()}', flush=True)
+                return self
+            except (IOError, OSError):
+                waited = time.time() - t0
+                if waited > self.timeout:
+                    self.fd.close()
+                    self.fd = None
+                    raise TimeoutError(f'marker-lock timeout depois de {int(waited)}s')
+                if int(waited) % 60 == 0 and int(waited) > 0:
+                    print(f'[marker-lock] aguardando... {int(waited)}s', flush=True)
+                time.sleep(5)
+    def __exit__(self, *args):
+        if self.fd:
+            import fcntl
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+            self.fd.close()
+            self.fd = None
+            print(f'[marker-lock] LIBERADO por pid={os.getpid()}', flush=True)
+
+
+def run_marker_ocr(input_pdf: str, output_md: str) -> bool:
+    """Roda marker-pdf (fallback). SEMPRE dentro de `with MarkerLock():`."""
+    try:
+        print(f'[marker] iniciando marker-pdf em {input_pdf}', flush=True)
+        result = subprocess.run(
+            ['python3', MARKER_SCRIPT, input_pdf,
+             '--output_dir', os.path.dirname(output_md),
+             '--json'],
+            capture_output=True, text=True, timeout=3600,
+        )
+        if result.returncode != 0:
+            print(f'[marker] falhou (rc={result.returncode}): {result.stderr[:300]}', flush=True)
+            return False
+        try:
+            data = json.loads(result.stdout)
+            md = data.get('markdown', '')
+            with open(output_md, 'w') as f:
+                f.write(md)
+            print(f'[marker] OK: {len(md)} chars extraídos', flush=True)
+            return True
+        except Exception as e:
+            print(f'[marker] falha ao parsear JSON: {e}', flush=True)
+            return False
+    except subprocess.TimeoutExpired:
+        print(f'[marker] TIMEOUT (>1h)', flush=True)
+        return False
+    except Exception as e:
+        print(f'[marker] ERRO: {e}', flush=True)
+        return False
+
+
+def extract_pages_with_fallback(pdf_path: str) -> list[dict]:
+    """Pipeline híbrido de extração (3 níveis).
+
+    1. pdftotext direto (PDF com texto embutido)
+    2. Tesseract via ocrmypdf (PDF escaneado)
+    3. marker-pdf (último recurso, consome 4-6GB RAM, usa lock)
+
+    Retorna [{page: int, text: str}, ...].
+    """
+    # Nível 1: pdftotext direto
+    pages = extract_pages(pdf_path)
+    total_chars = sum(len(p['text']) for p in pages)
+    if total_chars >= 1000:
+        print(f'[extract] N1 OK: {len(pages)} páginas, {total_chars} chars (pdftotext)', flush=True)
+        return pages
+    print(f'[extract] N1 fraco: {total_chars} chars. Tentando Tesseract...', flush=True)
+
+    # Nível 2: Tesseract
+    ocr_path = pdf_path + '.ocr.pdf'
+    if not run_ocr(pdf_path, ocr_path):
+        print(f'[extract] N2 falhou (Tesseract erro). Indo pra marker-pdf...', flush=True)
+    else:
+        pages = extract_pages(ocr_path)
+        total_chars = sum(len(p['text']) for p in pages)
+        if total_chars >= 1000:
+            print(f'[extract] N2 OK: {len(pages)} páginas, {total_chars} chars (Tesseract)', flush=True)
+            return pages
+        print(f'[extract] N2 fraco: {total_chars} chars. Indo pra marker-pdf...', flush=True)
+
+    # Nível 3: marker-pdf (com lock)
+    md_path = pdf_path + '.marker.md'
+    try:
+        with MarkerLock():
+            if run_marker_ocr(pdf_path, md_path) and os.path.exists(md_path):
+                with open(md_path) as f:
+                    md_text = f.read()
+                if len(md_text) >= 1000:
+                    print(f'[extract] N3 OK: {len(md_text)} chars (marker-pdf)', flush=True)
+                    # Marker retorna markdown contínuo, sem split por página.
+                    # Trade-off: RAG funciona, perdemos navegação por página.
+                    return [{'page': 1, 'text': md_text}]
+    except TimeoutError:
+        print(f'[extract] N3 timeout esperando lock. Sem mais fallbacks.', flush=True)
+
+    print(f'[extract] N3 falhou. Sem mais fallbacks.', flush=True)
+    return pages  # retorna o melhor que conseguiu (provavelmente fraco)
+
+
 def extract_pages(pdf_path: str) -> list[dict]:
     """Extrai texto por página. Retorna [{page: int, text: str}, ...]."""
     result = subprocess.run(
@@ -315,10 +437,10 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
         else:
             print(f'[upload-job] pdfinfo falhou, mantendo total_pages do frontend: {total_pages}', flush=True)
 
-        # 3. Extrai páginas
-        pages = extract_pages(process_pdf)
+        # 3. Extrai páginas (pipeline híbrido: pdftotext → Tesseract → marker-pdf)
+        pages = extract_pages_with_fallback(process_pdf)
         if not pages:
-            raise RuntimeError('PDF sem texto extraível (mesmo após OCR)')
+            raise RuntimeError('PDF sem texto extraível (mesmo após Tesseract + marker-pdf fallback)')
         print(f'[upload-job] {len(pages)} páginas extraídas', flush=True)
 
         # 4. Detecta capítulos

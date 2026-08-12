@@ -1,14 +1,18 @@
 import { useEffect, useState } from 'react'
-import { Upload, CheckCircle, AlertCircle, FileText, ArrowLeft } from 'lucide-react'
+import { Upload, CheckCircle, AlertCircle, FileText, ArrowLeft, CreditCard } from 'lucide-react'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
 
 type Status = 'idle' | 'uploading' | 'processing' | 'done' | 'error'
+type AccessStatus = 'loading' | 'paid' | 'unpaid' | 'awaiting_confirmation'
 
 interface Props {
   onBack: () => void
   onSuccess?: () => void
 }
+
+const VITE_PAYMENT_SERVER = (import.meta as any).env?.VITE_PAYMENT_SERVER_URL || 'https://pay.automacaojs.us'
+const UPLOAD_FEE_CENTS = 1500
 
 export function UploadPage({ onBack, onSuccess }: Props) {
   const { user } = useAuth()
@@ -19,11 +23,100 @@ export function UploadPage({ onBack, onSuccess }: Props) {
   const [progress, setProgress] = useState(0)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [ebookId, setEbookId] = useState<string | null>(null)
-  const [showPayment, setShowPayment] = useState(false)
   const [pdfPageCount, setPdfPageCount] = useState<number | null>(null)
   const [etaMinutes, setEtaMinutes] = useState<number>(2)
 
-  // Conta páginas do PDF via API legada (PDF.js carrega no ReaderPage depois)
+  // === Controle de acesso (pagamento de upload_fee) ===
+  const [access, setAccess] = useState<AccessStatus>('loading')
+  const [expiresAt, setExpiresAt] = useState<string | null>(null)
+  const [awaitingSince, setAwaitingSince] = useState<number | null>(null)
+
+  // 1. Ao montar, checa se o user já pagou (tem upload_payments válida)
+  useEffect(() => {
+    if (!user?.id) return
+    checkAccess()
+  }, [user?.id])
+
+  // 2. Se voltou do Asaas (success_url), polling a cada 3s por até 5 min
+  useEffect(() => {
+    if (access !== 'awaiting_confirmation') return
+    if (!user?.id) return
+    const startedAt = awaitingSince ?? Date.now()
+    const tick = async () => {
+      try {
+        const r = await fetch(`${VITE_PAYMENT_SERVER}/api/upload/access?user_id=${user.id}`)
+        const data = await r.json()
+        if (data.ok && data.has_access) {
+          setAccess('paid')
+          setExpiresAt(data.expires_at)
+          return
+        }
+      } catch {
+        // silencioso, tenta de novo
+      }
+      // Timeout 5 min
+      if (Date.now() - startedAt < 5 * 60 * 1000) {
+        setTimeout(tick, 3000)
+      } else {
+        setAccess('unpaid')
+        setErrorMsg('Confirmação não chegou em 5 minutos. Tente pagar novamente.')
+      }
+    }
+    setTimeout(tick, 3000)
+  }, [access, user?.id, awaitingSince])
+
+  // 3. Detecta se o user acabou de voltar do Asaas (hash com from=asaas)
+  useEffect(() => {
+    if (window.location.hash.includes('from=asaas')) {
+      setAccess('awaiting_confirmation')
+      setAwaitingSince(Date.now())
+    }
+  }, [])
+
+  async function checkAccess() {
+    if (!user?.id) return
+    try {
+      const r = await fetch(`${VITE_PAYMENT_SERVER}/api/upload/access?user_id=${user.id}`)
+      const data = await r.json()
+      if (data.ok && data.has_access) {
+        setAccess('paid')
+        setExpiresAt(data.expires_at)
+      } else {
+        setAccess('unpaid')
+      }
+    } catch {
+      setAccess('unpaid')
+    }
+  }
+
+  async function handlePayFee() {
+    if (!user?.id || !user.email) return
+    setErrorMsg(null)
+    try {
+      const r = await fetch(`${VITE_PAYMENT_SERVER}/api/upload/create-checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: user.id,
+          user_email: user.email,
+          success_url: 'https://preview.automacaojs.us/leitor-inteligente/#/upload?from=asaas',
+          cancel_url: 'https://preview.automacaojs.us/leitor-inteligente/#/upload',
+        }),
+      })
+      const data = await r.json()
+      if (!data.ok || !data.checkout_url) {
+        setErrorMsg(data.error || 'Falha ao criar checkout')
+        return
+      }
+      // Redireciona pro Asaas. Quando voltar, success_url tem #/upload?from=asaas
+      // e o useEffect acima ativa o polling.
+      window.location.href = data.checkout_url
+    } catch (e: any) {
+      setErrorMsg(e.message || 'Erro de rede ao criar checkout')
+    }
+  }
+
+  // Conta páginas do PDF via arraybuffer (mesma lógica do código original)
   const handleFile = async (f: File) => {
     if (!f.name.toLowerCase().endsWith('.pdf')) {
       setErrorMsg('Apenas PDFs são aceitos')
@@ -35,12 +128,10 @@ export function UploadPage({ onBack, onSuccess }: Props) {
     }
     setFile(f)
     setErrorMsg(null)
-    // Tenta extrair metadados do PDF (pdfinfo via arraybuffer)
     try {
       const buf = await f.arrayBuffer()
       const view = new Uint8Array(buf)
       const text = new TextDecoder('latin1').decode(view)
-      // Extrai /Author e /Title
       const authorMatch = text.match(/\/Author\s*\(([^)]+)\)/)
       const titleMatch = text.match(/\/Title\s*\(([^)]+)\)/)
       const pageMatch = text.match(/\/Count\s+(\d+)/)
@@ -48,22 +139,10 @@ export function UploadPage({ onBack, onSuccess }: Props) {
       if (titleMatch) setTitle(titleMatch[1])
       if (pageMatch) setPdfPageCount(Number(pageMatch[1]))
     } catch {
-      // silencia — usuário pode preencher manualmente
+      // silencia
     }
   }
 
-  const startUpload = async () => {
-    if (!file) {
-      setErrorMsg('Selecione um PDF')
-      return
-    }
-    setShowPayment(true)
-  }
-
-  // Re-após check de null acima, TS acha que file é não-null dentro do escopo
-  // Polling: a cada 5s pergunta pro backend se o livro está pronto.
-  // 360 tries × 5s = 30 min. Cobre livros grandes (~600p = ~20 min).
-  // Antes era 60 × 4s = 4 min — quebrava pra livros > 80p.
   const pollStatus = async (id: string) => {
     const tries = 360 // 360 × 5s = 30 min
     for (let i = 0; i < tries; i++) {
@@ -81,18 +160,18 @@ export function UploadPage({ onBack, onSuccess }: Props) {
           return
         }
       } catch (e) {
-        // silêncio, tenta de novo
+        // silêncio
       }
     }
-    // Timeout: livro grande ou erro silencioso
-    setErrorMsg('O processamento está demorando mais que o esperado (mais de 30min). Pode ser livro muito grande ou erro silencioso. Atualize a biblioteca em alguns minutos — se não aparecer, fale conosco.')
+    setErrorMsg('O processamento está demorando mais que o esperado (mais de 30min). Pode ser livro muito grande ou erro silencioso. Atualize a biblioteca em alguns minutos.')
     setStatus('error')
   }
 
-  const confirmPaymentAndUpload = async () => {
-    if (!file) return
-    const f = file
-    setShowPayment(false)
+  const startUpload = async () => {
+    if (!file) {
+      setErrorMsg('Selecione um PDF')
+      return
+    }
     setStatus('uploading')
     setProgress(0)
     setErrorMsg(null)
@@ -102,11 +181,11 @@ export function UploadPage({ onBack, onSuccess }: Props) {
       const token = sessionData.session?.access_token
       if (!token) throw new Error('Sessão inválida')
 
-      // 1. Gera signed URL
+      // 1. Signed URL upload
       const urlRes = await fetch(`${import.meta.env.BASE_URL}upload-api/upload-url`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ filename: f.name }),
+        body: JSON.stringify({ filename: file.name }),
       })
       if (!urlRes.ok) throw new Error(`Falha ao gerar URL: ${await urlRes.text()}`)
       const { upload_url, storage_path } = await urlRes.json()
@@ -121,7 +200,7 @@ export function UploadPage({ onBack, onSuccess }: Props) {
         xhr.onerror = () => reject(new Error('Falha no upload'))
         xhr.open('PUT', upload_url)
         xhr.setRequestHeader('Content-Type', 'application/pdf')
-        xhr.send(f)
+        xhr.send(file)
       })
       if (!putOk.ok) throw new Error(`Upload falhou: HTTP ${xhr.status}`)
 
@@ -145,15 +224,11 @@ export function UploadPage({ onBack, onSuccess }: Props) {
       const proc = await procRes.json()
       setEbookId(proc.ebook_id)
 
-      // ETA estimando baseado no nº de páginas: ~3s/página (BGE CPU)
-      // Livro 28p ≈ 1min, Livro 200p ≈ 10min, Livro 653p ≈ 33min
-      // Se frontend não detectou páginas (regex falhou), usa fallback 100 (~5min) — antes era 28 (1min, mentiroso)
       const effectivePages = pdfPageCount || 100
       const etaSeconds = Math.max(60, effectivePages * 3)
       const etaMin = Math.ceil(etaSeconds / 60)
       setEtaMinutes(etaMin)
 
-      // Começa a checar periodicamente se o livro já tá na biblioteca
       pollStatus(proc.ebook_id)
     } catch (e: any) {
       setErrorMsg(e.message || String(e))
@@ -177,87 +252,124 @@ export function UploadPage({ onBack, onSuccess }: Props) {
         <div className="upload-info">
           <strong>Como funciona:</strong>
           <ol>
-            <li>Você paga uma taxa de processamento de R$15 (simulado)</li>
-            <li>Faz upload do PDF</li>
-            <li>O sistema processa em background (1-5 min dependendo do tamanho)</li>
+            <li>Você paga uma taxa de processamento de R$15 (Asaas — PIX, cartão ou boleto)</li>
+            <li>Após confirmar, faz upload do PDF</li>
+            <li>O sistema processa em background (1-30 min dependendo do tamanho)</li>
             <li>Livro aparece automaticamente na sua biblioteca, pronto pra ler e perguntar</li>
           </ol>
         </div>
 
-        {!showPayment && status === 'idle' && (
-          <div className="upload-form">
-            <label className="upload-drop">
-              <input
-                type="file"
-                accept="application/pdf"
-                onChange={(e) => e.target.files && handleFile(e.target.files[0])}
-                style={{ display: 'none' }}
-              />
-              {file ? (
-                <>
-                  <FileText size={32} />
-                  <strong>{file.name}</strong>
-                  <span>{(file.size / 1024 / 1024).toFixed(2)} MB {pdfPageCount ? `· ${pdfPageCount} páginas` : ''}</span>
-                  <small>Clique pra trocar o arquivo</small>
-                </>
-              ) : (
-                <>
-                  <Upload size={32} />
-                  <strong>Clique ou arraste seu PDF aqui</strong>
-                  <span>Até 50 MB · Apenas .pdf</span>
-                </>
-              )}
-            </label>
-
-            <label className="field">
-              <span>Título (editável — preenchido automaticamente se o PDF tiver metadado)</span>
-              <input
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Ex: Meu livro favorito"
-              />
-            </label>
-
-            <label className="field">
-              <span>Autor</span>
-              <input
-                type="text"
-                value={author}
-                onChange={(e) => setAuthor(e.target.value)}
-                placeholder="Ex: Eu mesmo"
-              />
-            </label>
-
-            {errorMsg && (
-              <div className="auth-msg auth-msg-err">
-                <AlertCircle size={14} /> {errorMsg}
-              </div>
-            )}
-
-            <button className="btn-primary" disabled={!file} onClick={startUpload}>
-              Continuar (pagar R$15) →
-            </button>
+        {/* === LOADING inicial === */}
+        {access === 'loading' && (
+          <div className="upload-status">
+            <div className="spinner" />
+            <p>Verificando acesso...</p>
           </div>
         )}
 
-        {showPayment && (
+        {/* === AGUARDANDO confirmação do Asaas (depois do redirect) === */}
+        {access === 'awaiting_confirmation' && (
+          <div className="upload-status">
+            <div className="spinner" />
+            <h3>⏳ Confirmando pagamento...</h3>
+            <p>Você voltou do Asaas. Estamos validando o pagamento — isso leva até 5 segundos.</p>
+            <small>Se demorar mais que 5 minutos, fale com a gente.</small>
+          </div>
+        )}
+
+        {/* === NÃO PAGOU — mostra tela de pagamento === */}
+        {access === 'unpaid' && (
           <div className="upload-payment">
-            <h3>Taxa de processamento</h3>
-            <div className="payment-amount">R$ 15,00</div>
-            <p>Esta taxa cobre:</p>
+            <h3>💳 Taxa de processamento</h3>
+            <div className="payment-amount">
+              {(UPLOAD_FEE_CENTS / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+            </div>
+            <p>Esta taxa cobre o processamento pesado (10-30 min por livro):</p>
             <ul>
-              <li>Processamento automático (extração de texto ou OCR se escaneado)</li>
-              <li>Geração de embeddings semânticos pra RAG</li>
-              <li>Armazenamento seguro no seu perfil isolado</li>
+              <li>Extração automática de texto (ou OCR se escaneado)</li>
+              <li>Geração de embeddings semânticos pra RAG do Professor IA</li>
+              <li>Armazenamento seguro e isolado no seu perfil (RLS)</li>
+              <li>Acesso válido por 365 dias (pague 1 vez, use quantas vezes quiser)</li>
             </ul>
+            {errorMsg && (
+              <div className="auth-msg auth-msg-err" style={{ marginBottom: 12 }}>
+                <AlertCircle size={14} /> {errorMsg}
+              </div>
+            )}
             <div className="payment-actions">
-              <button className="btn-ghost" onClick={() => setShowPayment(false)}>Cancelar</button>
-              <button className="btn-primary" onClick={confirmPaymentAndUpload}>
-                ✓ Confirmar pagamento (simulado)
+              <button className="btn-ghost" onClick={onBack}>Voltar</button>
+              <button className="btn-primary" onClick={handlePayFee}>
+                <CreditCard size={16} /> Pagar e enviar livro
               </button>
             </div>
+            <small style={{ display: 'block', marginTop: 12, color: 'var(--muted)' }}>
+              💡 Você será redirecionado pro Asaas (sandbox). Cartão de teste: <code>4444 4444 4444 4444</code> / CVV <code>123</code> / val <code>12/30</code>
+            </small>
           </div>
+        )}
+
+        {/* === PAGOU — mostra form de upload === */}
+        {access === 'paid' && status === 'idle' && (
+          <>
+            <div className="auth-msg auth-msg-ok" style={{ marginBottom: 16 }}>
+              <CheckCircle size={14} /> Taxa paga! Acesso válido até{' '}
+              <strong>{expiresAt ? new Date(expiresAt).toLocaleDateString('pt-BR') : '—'}</strong>
+            </div>
+            <div className="upload-form">
+              <label className="upload-drop">
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  onChange={(e) => e.target.files && handleFile(e.target.files[0])}
+                  style={{ display: 'none' }}
+                />
+                {file ? (
+                  <>
+                    <FileText size={32} />
+                    <strong>{file.name}</strong>
+                    <span>{(file.size / 1024 / 1024).toFixed(2)} MB {pdfPageCount ? `· ${pdfPageCount} páginas` : ''}</span>
+                    <small>Clique pra trocar o arquivo</small>
+                  </>
+                ) : (
+                  <>
+                    <Upload size={32} />
+                    <strong>Clique ou arraste seu PDF aqui</strong>
+                    <span>Até 50 MB · Apenas .pdf</span>
+                  </>
+                )}
+              </label>
+
+              <label className="field">
+                <span>Título (editável — preenchido automaticamente se o PDF tiver metadado)</span>
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Ex: Meu livro favorito"
+                />
+              </label>
+
+              <label className="field">
+                <span>Autor</span>
+                <input
+                  type="text"
+                  value={author}
+                  onChange={(e) => setAuthor(e.target.value)}
+                  placeholder="Ex: Eu mesmo"
+                />
+              </label>
+
+              {errorMsg && (
+                <div className="auth-msg auth-msg-err">
+                  <AlertCircle size={14} /> {errorMsg}
+                </div>
+              )}
+
+              <button className="btn-primary" disabled={!file} onClick={startUpload}>
+                <Upload size={16} /> Enviar livro
+              </button>
+            </div>
+          </>
         )}
 
         {status === 'uploading' && (

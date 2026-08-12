@@ -396,7 +396,15 @@ input, textarea { font: inherit; color: inherit; }
 .icon-btn:hover { background: var(--line); }
 .icon-btn.primary:hover { filter: brightness(1.08); }
 @media (max-width: 640px) {
-  .user-name { display: none; }
+  .user-name {
+    display: inline-flex;
+    align-items: center;
+    max-width: 110px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.82rem;
+  }
   .icon-btn span.label { display: none; }
 }
 

@@ -85,6 +85,7 @@ coverage/
 
 # Supabase local
 .supabase/
+supabase/.temp/
 
 # Docker
 Dockerfile*

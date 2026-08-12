@@ -87,7 +87,9 @@ export function Topbar({ route, onNavigate, user, isAuthenticated, onSignOut }: 
               <Upload size={16} />
               <span className="label">Enviar</span>
             </button>
-            <span className="user-name">Olá, {user.name.split(' ')[0]}</span>
+            <span className="user-name" title={user.email}>
+              Olá, {user.name.split(' ')[0]}
+            </span>
             <button className="icon-btn" onClick={onSignOut} title="Sair">
               <LogOut size={16} />
               <span className="label">Sair</span>

@@ -272,7 +272,58 @@ def webhook(provider_name: str = 'cakto'):
     if not customer_id:
         return jsonify({'ok': False, 'error': f'user não encontrado pra email {email}'}), 404
 
-    # Resolve ebook_id a partir do slug
+    # === NOVO: detecção de pagamento de upload_fee ===
+    # externalReference no Asaas vem como "upload|customer_id|email" quando é upload.
+    # ebook_slug == 'upload' é o gatilho. Cria row em upload_payments e libera acesso
+    # ao pipeline de upload por 365 dias (1 ano).
+    if ebook_slug == 'upload':
+        from datetime import datetime, timedelta, timezone
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=365)).isoformat()
+        # Idempotente: usa upsert via asaas_payment_id UNIQUE
+        upsert_body = {
+            'user_id': customer_id,
+            'asaas_payment_id': order_id,
+            'paid_at': datetime.now(timezone.utc).isoformat(),
+            'expires_at': expires_at,
+            'amount_cents': amount or 1500,
+        }
+        upsert_headers = {
+            'apikey': SUPABASE_SR,
+            'Authorization': f'Bearer {SUPABASE_SR}',
+            'Content-Type': 'application/json',
+            'Prefer': 'resolution=merge-duplicates,return=representation',
+        }
+        upsert_req = urllib.request.Request(
+            f'{SUPABASE_URL}/rest/v1/upload_payments',
+            data=json.dumps(upsert_body).encode(),
+            headers=upsert_headers,
+            method='POST',
+        )
+        try:
+            with urllib.request.urlopen(upsert_req, timeout=15) as r:
+                inserted = json.loads(r.read())
+                print(f'[webhook] upload_payments: {len(inserted)} row(s) pra user={customer_id}', flush=True)
+        except urllib.error.HTTPError as e:
+            body = e.read().decode('utf-8', errors='ignore')[:300]
+            # 23505 = duplicate key — webhook duplicado. Idempotente: retorna 200 sem erro.
+            if e.code == 409 or '23505' in body or 'duplicate' in body.lower():
+                print(f'[webhook] upload_payments já existe pra payment={order_id}, idempotente', flush=True)
+                return jsonify({
+                    'ok': True,
+                    'kind': 'upload_payment',
+                    'user_id': customer_id,
+                    'idempotent': True,
+                })
+            print(f'[webhook] ERRO upload_payments HTTP {e.code}: {body}', flush=True)
+            return jsonify({'ok': False, 'error': f'falha ao registrar upload_payment: {body}'}), 500
+        return jsonify({
+            'ok': True,
+            'kind': 'upload_payment',
+            'user_id': customer_id,
+            'expires_at': expires_at,
+        })
+
+    # Resolve ebook_id a partir do slug (fluxo normal de compra de ebook)
     ebook_id = None
     if ebook_slug:
         status, body = _supabase_get(f'ebooks?slug=eq.{ebook_slug}&select=id')
@@ -494,6 +545,99 @@ pre {{ background: #f3f4f6; padding: 12px; border-radius: 8px; text-align: left;
 </div>
 </body></html>'''
     return html, 200, {'Content-Type': 'text/html; charset=utf-8'}
+
+
+# ============================================================
+# UPLOAD FEE — checkout + access check (Asaas sandbox)
+# ============================================================
+# Padrão: externalReference = "upload|<user_id>|<email>"
+# Webhook Asaas detecta ebook_slug == 'upload' e grava em upload_payments.
+# Frontend faz polling em /api/upload/access pra liberar botão de upload.
+
+@app.route('/api/upload/create-checkout', methods=['POST'])
+def upload_create_checkout():
+    """Cria payment Asaas de R$15 (sandbox) pra liberar 1 acesso de upload (365 dias)."""
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    user_email = data.get('user_email')
+    success_url = data.get('success_url')
+    cancel_url = data.get('cancel_url')
+
+    if not (user_id and user_email):
+        return jsonify({'ok': False, 'error': 'user_id e user_email obrigatórios'}), 400
+
+    provider = get_provider()
+    try:
+        session = provider.create_checkout(
+            product_id='upload',  # gatilho que o webhook detecta
+            product_name='Taxa de processamento de livro (Leitor Inteligente)',
+            amount_cents=1500,
+            customer_id=user_id,
+            customer_email=user_email,
+            success_url=success_url or 'https://preview.automacaojs.us/leitor-inteligente/#/upload',
+            cancel_url=cancel_url or 'https://preview.automacaojs.us/leitor-inteligente/#/upload',
+        )
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'falha ao criar checkout: {e}'}), 500
+
+    return jsonify({
+        'ok': True,
+        'checkout_url': session.checkout_url,
+        'external_id': session.external_id,
+        'amount_cents': 1500,
+    })
+
+
+@app.route('/api/upload/access', methods=['GET'])
+def upload_access():
+    """Verifica se o user tem upload_payments válida (não expirada).
+
+    Query: ?user_id=<uuid>
+    Retorna: { ok, has_access, expires_at, amount_cents, paid_at }
+    """
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({'ok': False, 'error': 'user_id obrigatório'}), 400
+
+    # Busca a última upload_payments do user, ordenada por paid_at desc
+    status, body = _supabase_get(
+        f'upload_payments?user_id=eq.{user_id}&order=paid_at.desc&limit=1'
+    )
+    if status != 200:
+        return jsonify({'ok': False, 'error': f'falha ao consultar: {body[:200]}'}), 500
+
+    try:
+        rows = json.loads(body) if body.strip() else []
+    except Exception:
+        rows = []
+
+    if not rows:
+        return jsonify({'ok': True, 'has_access': False, 'reason': 'no_payment'})
+
+    row = rows[0]
+    # Compara expires_at com agora
+    from datetime import datetime, timezone
+    try:
+        expires_at = datetime.fromisoformat(row['expires_at'].replace('Z', '+00:00'))
+    except Exception:
+        return jsonify({'ok': False, 'error': f'expires_at inválido: {row.get("expires_at")}'}), 500
+    now = datetime.now(timezone.utc)
+    if expires_at <= now:
+        return jsonify({
+            'ok': True,
+            'has_access': False,
+            'reason': 'expired',
+            'expires_at': row['expires_at'],
+            'paid_at': row.get('paid_at'),
+        })
+
+    return jsonify({
+        'ok': True,
+        'has_access': True,
+        'expires_at': row['expires_at'],
+        'paid_at': row.get('paid_at'),
+        'amount_cents': row.get('amount_cents'),
+    })
 
 
 if __name__ == '__main__':
