@@ -551,16 +551,61 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
                 print(f'  falha: page={f[0]} code={f[1]} body={f[2][:100]}', flush=True)
         print(f'[upload-job] {len(pages)} embeddings salvos', flush=True)
 
-        # 9. UPDATE ebook (chapter_count + cover_url opcional)
+        # 9. EXTRAÇÃO AUTOMÁTICA DE CAPA (PyMuPDF + heurística de página vazia)
+        cover_url = None
+        try:
+            from cover_extractor import extract_cover as _extract_cover
+            cover_local = f'{tmp_dir}/cover.jpg'
+            extracted = _extract_cover(final_pdf_local, cover_local, max_pages=5)
+            if extracted and os.path.exists(extracted):
+                cover_storage_path = f'{user_id}/{ebook_id}/cover.jpg'
+                # Upload via REST signed upload (token vem do /upload-url/sign)
+                sign_req = Request(
+                    f'{SUPABASE_URL}/storage/v1/object/upload/sign/ebooks/{cover_storage_path}',
+                    headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+                    method='POST'
+                )
+                with urlopen(sign_req, timeout=15) as r:
+                    sign_data = json.loads(r.read())
+                token = sign_data['token']
+                with open(extracted, 'rb') as f:
+                    cover_bytes = f.read()
+                upload_req = Request(
+                    f'{SUPABASE_URL}/storage/v1/object/upload/sign/ebooks/{cover_storage_path}?token={token}',
+                    data=cover_bytes,
+                    headers={
+                        'apikey': SUPABASE_SR,
+                        'Authorization': f'Bearer {SUPABASE_SR}',
+                        'Content-Type': 'image/jpeg',
+                        'x-upsert': 'true',
+                    },
+                    method='PUT'
+                )
+                with urlopen(upload_req, timeout=30) as r:
+                    upload_resp = json.loads(r.read())
+                    print(f'[upload-job] cover uploaded: {cover_storage_path}', flush=True)
+                # URL pública (bucket ebooks já é público pra leitura via signed URL)
+                cover_url = f'{SUPABASE_URL}/storage/v1/object/public/ebooks/{cover_storage_path}'
+                print(f'[upload-job] cover_url: {cover_url}', flush=True)
+        except Exception as cover_err:
+            print(f'[upload-job] cover extraction falhou (não-crítico): {cover_err}', flush=True)
+            traceback.print_exc()
+
+        # 10. UPDATE ebook (chapter_count + cover_url + total_pages)
         chapter_count = len(chapters) if chapters else 0
+        upd_payload = {'chapter_count': chapter_count, 'total_pages': len(pages)}
+        if cover_url:
+            upd_payload['cover_url'] = cover_url
         upd_req = Request(
             f'{SUPABASE_URL}/rest/v1/ebooks?id=eq.{ebook_id}',
-            data=json.dumps({'chapter_count': chapter_count, 'total_pages': len(pages)}).encode(),
+            data=json.dumps(upd_payload).encode(),
             headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
                      'Content-Type': 'application/json'},
             method='PATCH'
         )
         urlopen(upd_req, timeout=15)
+        if cover_url:
+            print(f'[upload-job] cover_url salva no ebook', flush=True)
 
         # 10. INSERT user_library (libera pro próprio user, sem precisar comprar)
         lib_req = Request(
