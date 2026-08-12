@@ -49,6 +49,12 @@ function InnerApp() {
   // Livros do user que NÃO estão no CATALOG hardcoded (livros uploaded)
   const [dynamicBook, setDynamicBook] = useState<Book | null>(null)
   const lastSyncedUser = useRef<string | undefined>(undefined)
+  // Modal que aparece quando o polling detecta o livro liberado
+  const [pendingRedirect, setPendingRedirect] = useState<{
+    bookSlug: string
+    redirectUrl: string
+    countdown: number
+  } | null>(null)
 
   useEffect(() => {
     const onHash = () => setRouteState(readRoute())
@@ -143,11 +149,13 @@ function InnerApp() {
 
   const handleConfirmCheckout = useCallback(async () => {
     if (!checkoutTarget) return
+    // Não navega ainda — buyBookRemote abre checkout em nova aba
+    // e a aba original fica viva. Quando o webhook liberar, o polling
+    // mostra o modal "redirecionando em 5s" e leva pra Biblioteca.
     const next = await buyBookRemote(checkoutTarget, library)
     setLibrary(next)
     setCheckoutTarget(null)
-    navigate('library')
-  }, [checkoutTarget, library, navigate])
+  }, [checkoutTarget, library])
 
   const handleResetLibrary = useCallback(() => {
     const empty: LibraryState = { purchases: [] }
