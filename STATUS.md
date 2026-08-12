@@ -8,6 +8,30 @@
 
 ---
 
+## 🆕 Auditoria de segurança pré-produção (12/08/2026, Cláudio Code via Isaías)
+
+Pergunta 1: **RLS ativo em todas as tabelas?**
+- ✅ SIM. Query `SELECT relname, relrowsecurity FROM pg_class WHERE relnamespace='public' AND relkind='r'` retornou 9 tabelas (ebook_pages, ebooks, profiles, purchases, reading_progress, reading_sessions, sala_messages, upload_payments, user_library), **todas com `rls_enabled = t`**.
+- ✅ 14 policies PERMISSIVE com escopo correto: own (user lê/edita só os próprios dados), admin_all (admin do painel admin), public_read (ebooks + pages que são públicos pro catálogo).
+
+Pergunta 2: **`.env.production` estava commitado no GitHub com a ANON key?**
+- ⚠️ **SIM** — commit `f2f566cb` (03/08) tinha `.env.production` com `VITE_SUPABASE_ANON_KEY` (formato legacy `eyJ...`). O `.gitignore` atual JÁ tem `.env.production` na linha 17, mas o arquivo foi commitado ANTES de entrar no gitignore (31/07).
+- ✅ **`SUPABASE_SERVICE_ROLE` NUNCA foi commitada** — só existe em `/root/.hermes/secrets/leitor-supabase.env` (fora do repo) e nos 6 servers Python (api/*.py) que lêem via `os.environ`.
+
+**Ações tomadas:**
+1. Backup do repo: `/root/backups/leitor-pre-filter-repo-20260812-113415/`
+2. Backup do `.env.production` original: `.env.production.bak-pre-cleanup-20260812-113403`
+3. `git filter-repo --invert-paths --path .env.production` removeu o arquivo de todos os 13 commits
+4. `git push --force` pro GitHub (commit `f04c3ab` agora é o HEAD)
+5. Verificação: `https://api.github.com/repos/Jisaiaslima35/leitor-inteligente/contents/.env.production` → **404 Not Found**
+6. Rotação de key: criei nova `publishable` key via Supabase Management API: `sb_publishable_fxrnH0vYieAOWXbh1KHWpA_r-tCy520` (id `fd495eb6-...`)
+7. `.env.production` (NOVO, fora do git): contém a publishable key. Build verde, deploy OK.
+8. Anon legacy (`eyJhbG...UMKw`) ainda existe no Supabase mas não é mais usada. Expira por inatividade em 90 dias. Pra deletar agora, Dashboard > Settings > API.
+
+**Resultado:** risco da ANON key exposta ser explorada está zerado.
+
+---
+
 ## 🆕 Validação 12/08/2026 — Bug fix página + Kindle features (commit `fdbf8bf`)
 
 Isaías reportou: (1) ao parar na p40 e voltar, abria na p1; (2) sem barra de progresso; (3) pediu comparação com Kindle. Análise + fix abaixo.
