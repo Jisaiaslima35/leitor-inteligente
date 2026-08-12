@@ -8,6 +8,35 @@
 
 ---
 
+## 🆕 Capa automática no upload (12/08/2026, Pitfall #84 — Isaías)
+
+**Problema:** e-books enviados iam pra Biblioteca sem capa (só título + autor). Visual feio.
+
+**Implementação (commit `6179e82`):**
+
+- **`api/cover_extractor.py` (novo):** PyMuPDF + Pillow. Renderiza página como JPEG 600px wide, otimiza (qualidade 85, progressive).
+- **Heurística de "página vazia":** sample aleatório de 1500 pixels do pixmap. Se `white_ratio >= 0.85` E `mean_brightness > 240` E `std < 15` → classifica como vazia e pula pra próxima. Tenta até 5 páginas. Fallback = p1 sempre.
+- **`api/upload_book.py`:** após os embeddings, chama `extract_cover()`, faz upload pro Supabase Storage via signed URL (path `{user_id}/{ebook_id}/cover.jpg`), e adiciona `cover_url` no PATCH final do `ebook`.
+- **`src/components/BookCard.tsx`:** usa `cover_url` real do Supabase (via RLS public_read) no lugar do placeholder Unsplash hardcoded. Fallback gracioso.
+
+**Testes manuais:**
+
+| Livro | Páginas | Capa gerada | Tamanho | Páginas puladas |
+|---|---|---|---|---|
+| O Poder do Hábito | 354 | p1 | 71 KB | 0 |
+| Bíblia Dake — Gálatas | 12 | p1 | 68 KB | 0 |
+| Fabricante de Lágrimas | 655 | p1 | 85 KB | 0 |
+| O Pequeno Príncipe | 71 | p1 | 49 KB | 0 |
+| **PDF fake (p1 branca, p2 capa)** | 2 | **p2** | 12 KB | **1 (pulou folha de rosto)** |
+
+Heurística funciona — pula folha de rosto em branco automaticamente.
+
+**4 capas regeneradas** dos livros existentes via script `regen_covers.py` (Storage bucket `ebooks/public/`, URL pública `https://yfnzlowtgnlqizobnslh.supabase.co/storage/v1/object/public/ebooks/public/{slug}-cover.jpg`).
+
+**Status:** deployado em `preview.automacaojs.us/leitor-inteligente` no commit `6179e82`. Bundle novo `index-CnB2DOJV.js` (deploy 11:45).
+
+---
+
 ## 🆕 Auditoria de segurança pré-produção (12/08/2026, Cláudio Code via Isaías)
 
 Pergunta 1: **RLS ativo em todas as tabelas?**
