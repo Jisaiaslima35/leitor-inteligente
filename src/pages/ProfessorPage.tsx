@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Mic, Send, Volume2, ArrowLeft } from 'lucide-react'
+import { Mic, Send, Volume2, VolumeX, ArrowLeft } from 'lucide-react'
 import type { Book } from '../domain/types'
 import { answerQuestion, type RagSource } from '../domain/rag'
+import { useSpeechToggle } from '../lib/useSpeechToggle'
 
 type ChatRole = 'user' | 'ai'
 
@@ -31,15 +32,6 @@ function getSpeechRecognition(): SpeechRecognitionLike | null {
   return new Cls()
 }
 
-function speak(text: string): void {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
-  const utter = new SpeechSynthesisUtterance(text)
-  utter.lang = 'pt-BR'
-  utter.rate = 1
-  window.speechSynthesis.cancel()
-  window.speechSynthesis.speak(utter)
-}
-
 interface Props {
   book: Book
   onBackToReader: () => void
@@ -58,14 +50,15 @@ export function ProfessorPage({ book, onBackToReader }: Props) {
   const [voiceSupported] = useState(() => getSpeechRecognition() !== null)
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const speech = useSpeechToggle()
 
   useEffect(() => {
     return () => {
       recognitionRef.current?.stop()
       recognitionRef.current = null
-      if (typeof window !== 'undefined') window.speechSynthesis.cancel()
+      speech.stop()
     }
-  }, [])
+  }, [speech])
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
@@ -83,9 +76,10 @@ export function ProfessorPage({ book, onBackToReader }: Props) {
       sources: answer.sources,
     }
     setMessages((current) => [...current, userMessage, aiMessage])
-    speak(answer.answer)
+    // Auto-narra a resposta via hook (respeitando toggle/pause se o user já tiver pausado antes)
+    speech.speak(answer.answer)
     setInput('')
-  }, [book])
+  }, [book, speech])
 
   const toggleListening = useCallback(() => {
     if (listening) {
@@ -169,12 +163,18 @@ export function ProfessorPage({ book, onBackToReader }: Props) {
           </button>
           <button
             type="button"
-            className="icon-btn"
-            onClick={() => speak(messages[messages.length - 1]?.text ?? '')}
-            aria-label="Ouvir a última resposta"
-            title="Ouvir a última resposta"
+            className={`icon-btn ${speech.status === 'speaking' ? 'is-on is-speaking' : ''}`}
+            onClick={() => {
+              const lastAi = [...messages].reverse().find((m) => m.role === 'ai')
+              if (!lastAi) return
+              speech.toggle(lastAi.text)
+            }}
+            disabled={!speech.isSupported || !messages.some((m) => m.role === 'ai')}
+            aria-pressed={speech.status === 'speaking'}
+            aria-label={speech.status === 'speaking' ? 'Parar narração' : 'Ouvir a última resposta'}
+            title={speech.status === 'speaking' ? 'Parar narração' : 'Ouvir a última resposta'}
           >
-            <Volume2 size={18} />
+            {speech.status === 'speaking' ? <VolumeX size={18} /> : <Volume2 size={18} />}
           </button>
           <button type="button" className="btn btn-primary" onClick={() => send(input)}>
             <Send size={16} /> Enviar

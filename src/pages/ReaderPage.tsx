@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { ChevronLeft, ChevronRight, Mic, Send, Volume2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Mic, Send, Volume2, VolumeX } from 'lucide-react'
 import type { Book } from '../domain/types'
 import type { ProgressState } from '../domain/library'
 import { getProgress } from '../domain/progress'
@@ -8,6 +8,7 @@ import { ShareActions } from '../components/ShareActions'
 import type { RagSource } from '../domain/rag'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
+import { useSpeechToggle } from '../lib/useSpeechToggle'
 type ChatRole = 'user' | 'ai'
 
 interface ChatMessage {
@@ -32,15 +33,6 @@ function getSpeechRecognition(): SpeechRecognitionLike | null {
   if (typeof window === 'undefined') return null
   const w = window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognitionLike; SpeechRecognition?: new () => SpeechRecognitionLike }
   return w.SpeechRecognition ? new w.SpeechRecognition() : w.webkitSpeechRecognition ? new w.webkitSpeechRecognition() : null
-}
-
-function speak(text: string) {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window) || !text) return
-  window.speechSynthesis.cancel()
-  const utter = new SpeechSynthesisUtterance(text)
-  utter.lang = 'pt-BR'
-  utter.rate = 1
-  window.speechSynthesis.speak(utter)
 }
 
 interface Props {
@@ -153,12 +145,13 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
   const [voiceSupported] = useState(() => getSpeechRecognition() !== null)
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const chatScrollRef = useRef<HTMLDivElement>(null)
+  const speech = useSpeechToggle()
 
   useEffect(() => () => {
     recognitionRef.current?.stop()
     recognitionRef.current = null
-    if (typeof window !== 'undefined') window.speechSynthesis.cancel()
-  }, [])
+    speech.stop()
+  }, [speech])
 
   useEffect(() => {
     if (chatScrollRef.current) chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
@@ -189,7 +182,7 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
         sources: data.sources,
       }
       setMessages((current) => [...current, aiMessage])
-      speak(data.answer)
+      speech.speak(data.answer)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Falha na consulta'
       setMessages((current) => [...current, {
@@ -200,7 +193,7 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
     } finally {
       setThinking(false)
     }
-  }, [book.id, page, thinking])
+  }, [book.id, page, thinking, speech])
 
   const toggleListening = useCallback(() => {
     if (listening) {
@@ -321,7 +314,7 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
         listening={listening}
         voiceSupported={voiceSupported}
         toggleListening={toggleListening}
-        speak={speak}
+        speech={speech}
         chatScrollRef={chatScrollRef}
       />
     </section>
@@ -338,11 +331,17 @@ interface ChatProps {
   listening: boolean
   voiceSupported: boolean
   toggleListening: () => void
-  speak: (t: string) => void
+  speech: {
+    status: 'idle' | 'speaking'
+    speak: (t: string) => void
+    toggle: (t: string) => void
+    stop: () => void
+    isSupported: boolean
+  }
   chatScrollRef: React.RefObject<HTMLDivElement | null>
 }
 
-function ProfessorChat({ book, messages, input, setInput, send, thinking, listening, voiceSupported, toggleListening, speak, chatScrollRef }: ChatProps) {
+function ProfessorChat({ book, messages, input, setInput, send, thinking, listening, voiceSupported, toggleListening, speech, chatScrollRef }: ChatProps) {
   return (
     <div className="professor-panel" style={{ marginTop: 20 }}>
       <div className="professor-header">
@@ -390,11 +389,18 @@ function ProfessorChat({ book, messages, input, setInput, send, thinking, listen
         </button>
         <button
           type="button"
-          className="icon-btn"
-          onClick={() => speak(messages[messages.length - 1]?.text ?? '')}
-          aria-label="Ouvir a última resposta"
+          className={`icon-btn ${speech.status === 'speaking' ? 'is-on is-speaking' : ''}`}
+          onClick={() => {
+            const lastAi = [...messages].reverse().find((m) => m.role === 'ai')
+            if (!lastAi) return
+            speech.toggle(lastAi.text)
+          }}
+          disabled={!speech.isSupported}
+          aria-pressed={speech.status === 'speaking'}
+          aria-label={speech.status === 'speaking' ? 'Parar narração' : 'Ouvir a última resposta'}
+          title={speech.status === 'speaking' ? 'Parar narração' : 'Ouvir a última resposta'}
         >
-          <Volume2 size={18} />
+          {speech.status === 'speaking' ? <VolumeX size={18} /> : <Volume2 size={18} />}
         </button>
         <button type="button" className="btn btn-primary" disabled={thinking} onClick={() => send(input)}>
           <Send size={16} /> {thinking ? 'Pensando…' : 'Enviar'}

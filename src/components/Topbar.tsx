@@ -21,6 +21,7 @@ interface Props {
 
 export function Topbar({ route, onNavigate, user, isAuthenticated, onSignOut }: Props) {
   const [streak, setStreak] = useState<Streak | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -43,6 +44,19 @@ export function Topbar({ route, onNavigate, user, isAuthenticated, onSignOut }: 
     }
   }, [isAuthenticated, user.id])
 
+  // Fecha o menu ao clicar fora
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDocClick = (ev: MouseEvent) => {
+      const target = ev.target as HTMLElement | null
+      if (!target) return
+      if (target.closest('.user-menu')) return
+      setMenuOpen(false)
+    }
+    document.addEventListener('click', onDocClick)
+    return () => document.removeEventListener('click', onDocClick)
+  }, [menuOpen])
+
   const streakBadge = streak && streak.current_streak >= 1 ? (
     <span
       className="streak-badge"
@@ -52,6 +66,8 @@ export function Topbar({ route, onNavigate, user, isAuthenticated, onSignOut }: 
       <span>{streak.current_streak}</span>
     </span>
   ) : null
+
+  const firstName = (user.name || user.email || 'Você').split(' ')[0]
 
   return (
     <header className="topbar">
@@ -83,17 +99,47 @@ export function Topbar({ route, onNavigate, user, isAuthenticated, onSignOut }: 
               className="icon-btn"
               onClick={() => onNavigate('upload')}
               title="Enviar meu livro"
+              aria-label="Enviar meu livro"
             >
               <Upload size={16} />
               <span className="label">Enviar</span>
             </button>
-            <span className="user-name" title={user.email}>
-              Olá, {user.name.split(' ')[0]}
-            </span>
-            <button className="icon-btn" onClick={onSignOut} title="Sair">
-              <LogOut size={16} />
-              <span className="label">Sair</span>
-            </button>
+            <div className={`user-menu ${menuOpen ? 'is-open' : ''}`}>
+              <button
+                type="button"
+                className="user-name"
+                title={user.email}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                onClick={() => setMenuOpen((v) => !v)}
+              >
+                Olá, {firstName}
+                <span className="user-caret" aria-hidden="true">▾</span>
+              </button>
+              {menuOpen && (
+                <div className="user-menu-panel" role="menu">
+                  <div className="user-menu-row">
+                    <span className="user-menu-label">Usuário</span>
+                    <span className="user-menu-value">{user.name || '—'}</span>
+                  </div>
+                  <div className="user-menu-row">
+                    <span className="user-menu-label">E-mail</span>
+                    <span className="user-menu-value user-menu-email">{user.email}</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="user-menu-signout"
+                    onClick={() => {
+                      setMenuOpen(false)
+                      onSignOut()
+                    }}
+                    role="menuitem"
+                  >
+                    <LogOut size={14} /> Sair
+                  </button>
+                </div>
+              )}
+            </div>
           </>
         ) : (
           <button className="icon-btn primary" onClick={() => onNavigate('login')} title="Entrar">
