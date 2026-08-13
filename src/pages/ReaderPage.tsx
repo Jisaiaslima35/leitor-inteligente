@@ -404,8 +404,19 @@ function ProfessorChat({ book, messages, input, setInput, send, thinking, listen
           {speech.status === 'speaking' ? <VolumeX size={18} /> : <Volume2 size={18} />}
         </button>
         {speech.debugInfo && (
-          <div style={{ display: 'none' }} data-tts-debug>
-            {speech.debugInfo}
+          <div
+            data-tts-debug
+            style={{
+              fontSize: '11px',
+              color: '#888',
+              padding: '4px 8px',
+              wordBreak: 'break-word',
+              background: '#f5f5f5',
+              borderRadius: '4px',
+              marginTop: '4px',
+            }}
+          >
+            🔍 {speech.debugInfo}
           </div>
         )}
         <button type="button" className="btn btn-primary" disabled={thinking} onClick={() => send(input)}>
