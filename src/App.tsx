@@ -214,7 +214,7 @@ function InnerApp() {
           <HomePage onNavigate={navigate} onBuy={handleBuyClick} library={library} />
         )}
         {route === 'store' && (
-          <StorePage onBuy={handleBuyClick} library={library} />
+          <StorePage onBuy={handleBuyClick} library={library} onGoLibrary={() => navigate('library')} />
         )}
         {route === 'library' && isAuthenticated && (
           <LibraryPage progress={progress} onNavigate={navigate} />

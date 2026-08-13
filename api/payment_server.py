@@ -31,7 +31,7 @@ from pathlib import Path
 # Adiciona o path do projeto
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, redirect, request
 from flask_cors import CORS
 
 from payments import get_provider
@@ -164,6 +164,80 @@ def _release_ebook(*, user_id: str, ebook_id: str, amount_cents: int,
 
 
 # ==================== ENDPOINTS ====================
+
+@app.route('/api/checkout/redirect', methods=['GET'])
+def checkout_redirect():
+    """GET endpoint que cria checkout + redireciona 302 ao Asaas.
+
+    PITFALL mobile: fetch no click + window.location.href falha silencioso
+    (popup blocker, gesture timeout, sessão perdida). Solução: uma única
+    navegação GET para este endpoint, que retorna 302 -> Asaas. Browser
+    trata como navegação normal, sem JSON fetching no front.
+
+    Query params:
+        slug: ebook_slug
+        email: customer_email
+        uid: customer_id (UUID do user)
+        back: URL pra voltar pro Leitor (default: Library)
+    """
+    ebook_slug = request.args.get('slug')
+    customer_email = request.args.get('email')
+    customer_id = request.args.get('uid')
+    back_url = request.args.get('back') or 'https://preview.automacaojs.us/leitor-inteligente/#/library'
+
+    if not (ebook_slug and customer_email):
+        return redirect('https://preview.automacaojs.us/leitor-inteligente/#/store')
+
+    status, body = _supabase_get(
+        f'ebooks?slug=eq.{ebook_slug}&select=id,title,price_cents,slug'
+    )
+    if status != 200:
+        return redirect(
+            f'https://preview.automacaojs.us/leitor-inteligente/#/store?error=supabase_{status}'
+        )
+    try:
+        ebooks = json.loads(body)
+    except Exception:
+        ebooks = []
+    if not ebooks:
+        return redirect(
+            f'https://preview.automacaojs.us/leitor-inteligente/#/store?error=ebook_not_found'
+        )
+
+    ebook = ebooks[0]
+    ebook_id = ebook['id']
+    product_name = ebook['title']
+    amount_cents = int(ebook.get('price_cents') or 2990)
+
+    provider = get_provider()
+    try:
+        session = provider.create_checkout(
+            amount_cents=amount_cents,
+            product_name=product_name,
+            product_id=ebook_slug,
+            customer_email=customer_email,
+            customer_id=customer_id or customer_email,
+            success_url=back_url,
+            cancel_url='https://preview.automacaojs.us/leitor-inteligente/#/store',
+        )
+    except Exception as e:
+        print(f'[checkout/redirect] erro provider: {e}', flush=True)
+        return redirect(
+            f'https://preview.automacaojs.us/leitor-inteligente/#/store?error=provider_failed'
+        )
+
+    _supabase_post('purchases', {
+        'user_id': customer_id or customer_email,
+        'ebook_id': ebook_id,
+        'amount_cents': amount_cents,
+        'currency': 'BRL',
+        'payment_method': provider.name,
+        'payment_id': session.external_id or 'pending',
+        'status': 'pending',
+    })
+
+    return redirect(session.checkout_url, code=302)
+
 
 @app.route('/api/checkout/create', methods=['POST'])
 def checkout_create():

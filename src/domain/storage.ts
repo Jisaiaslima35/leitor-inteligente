@@ -68,90 +68,76 @@ async function currentUserId(): Promise<string> {
   return DEFAULT_USER.id
 }
 
+// === Validação de sessão Supabase ===
+// getSession() retorna a sessão do localStorage do cliente Supabase JS. Se a anon
+// key foi rotacionada pelo backend ou o token expirou, getSession() retorna
+// sessão nula mesmo com UI mostrando "logado". Confiamos só em getSession(),
+// nunca no estado React.
+async function getValidSession(): Promise<{ userId: string; email: string } | null> {
+  if (!SUPABASE_READY) return null
+  const { data } = await supabase.auth.getSession()
+  const s = data.session
+  if (!s?.user?.id || !s.user.email) return null
+  return { userId: s.user.id, email: s.user.email }
+}
+
 export async function buyBookRemote(book: Book, state: LibraryState): Promise<LibraryState> {
-  // PRIMEIRO: abre janela de checkout sincronamente (dentro do user gesture
-  // do click em "Confirmar"). Browsers matam popup se window.open vier
-  // depois de await. Depois preenchemos a URL.
+  // DECISÃO 13/08/2026 (revisão): fluxo via GET redirect no servidor.
+  //
+  // Por que GET e não POST+location.href:
+  //   - window.location.href após fetch async falha silencioso em mobile (gesture
+  //     timeout, popup blocker, session perdida)
+  //   - Solução: uma única navegação GET para /api/checkout/redirect no backend.
+  //     Server cria checkout e retorna 302 direto pro Asaas. Browser trata como
+  //     navegação normal, sem race condition.
+  //
+  // Bug de segurança corrigido:
+  //   - Antes: se getSession() retornasse null, o código caía no fallback
+  //     `persistLibrary(next)` que liberava o livro sem pagar. Risco: rotação
+  //     de anon key quebrou sessão e mostrou bug "fecha e abre a aba" — porque
+  //     o livro era persistido localmente (sem Asaas, sem webhook), a aba voltava
+  //     ao mesmo ponto ("pisca"), e ninguém era notificado.
+  //   - Agora: se NÃO tem sessão Supabase válida, NÃO persiste. Pede login.
+  //
+  // Fluxo após pagamento: user volta pro Leitor (sucesso_url = /library), vê o
+  // livro na Biblioteca e nas Compras. Sem polling client-side.
   const slug = book.id
-  const returnUrl = 'https://preview.automacaojs.us/leitor-inteligente/#/library?from=asaas&book=' + encodeURIComponent(slug)
-  const checkoutTab = window.open('about:blank', '_blank', 'noopener,noreferrer')
 
-  const userId = await currentUserId()
-  const userEmail = await currentUserEmail()
-  const next = checkoutBook(state, userId, book.id)
+  // 1. Sessão válida é obrigatória para comprar. Sem sessão = pedir login.
+  const sess = await getValidSession()
+  if (!sess) {
+    console.warn('[payment] sem sessão Supabase válida — redireciona pra login')
+    try { window.localStorage.removeItem('leitor-ia:pending-checkout') } catch {}
+    window.location.hash = '#/login?reason=checkout&book=' + encodeURIComponent(book.id)
+    return state  // NÃO persiste nada
+  }
 
-  // Se logado e Supabase OK, chama payment server pra criar checkout dinâmico
-  if (SUPABASE_READY && userId !== DEFAULT_USER.id && userEmail) {
-    if (!checkoutTab) {
-      // Popup bloqueado — cai pro redirect direto
-      console.warn('[payment] popup bloqueado, usando redirect direto')
-      pollUntilLibraryHas(slug, null, returnUrl, 60000).catch(() => {})
-      try {
-        const useSimulationFb = (window as any).__CAKTO_SIMULATION__ === true
-        const endpointFb = useSimulationFb ? '/api/payment/simulate-flow' : '/api/checkout/create'
-        const rFb = await fetch(`https://pay.automacaojs.us${endpointFb}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ebook_slug: book.id,
-            customer_email: userEmail,
-            customer_id: userId,
-            success_url: 'https://preview.automacaojs.us/leitor-inteligente/#/library',
-            cancel_url: 'https://preview.automacaojs.us/leitor-inteligente/#/store',
-          }),
-        })
-        const dataFb = await rFb.json()
-        if (dataFb.ok && dataFb.checkout_url) {
-          window.location.href = dataFb.checkout_url
-        }
-      } catch (e) {
-        console.error('[payment] exception fallback:', e)
-      }
-      return next
-    }
-
+  // 2. Marca flag visual pra Loja mostrar "Pagou?" quando voltar
+  if (hasStorage()) {
     try {
-      // Em modo teste (CAKTO bloqueado pelo Cloudflare), usa simulate-flow
-      // Em produção, usa checkout/create
-      // Por padrão agora: usa Asaas real (criar checkout dinâmico)
-      const useSimulation = (window as any).__CAKTO_SIMULATION__ === true
-      const endpoint = useSimulation ? '/api/payment/simulate-flow' : '/api/checkout/create'
-      const payload = {
-        __simulate: useSimulation,
-        ebook_slug: book.id,
-        customer_email: userEmail,
-        customer_id: userId,
-        success_url: 'https://preview.automacaojs.us/leitor-inteligente/#/library',
-        cancel_url: 'https://preview.automacaojs.us/leitor-inteligente/#/store',
-      }
-      const r = await fetch(`https://pay.automacaojs.us${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      const data = await r.json()
-      if (data.ok && data.checkout_url) {
-        // Redireciona a janela já aberta pra URL do checkout Asaas
-        try { checkoutTab.location.href = data.checkout_url } catch { /* aba já fechada — fallback */ }
-        pollUntilLibraryHas(slug, checkoutTab, returnUrl, 60000).catch(() => {})
-        return next  // usuário volta via polling quando webhook liberar
-      }
-      console.error('[payment] erro:', data.error)
-      try { checkoutTab.close() } catch { /* aba já fechada */ }
-      return state
-    } catch (e) {
-      console.error('[payment] exception:', e)
-      try { checkoutTab.close() } catch { /* aba já fechada */ }
-      return state
-    }
+      window.localStorage.setItem(
+        'leitor-ia:pending-checkout',
+        JSON.stringify({ bookId: slug, bookTitle: book.title, at: Date.now() }),
+      )
+    } catch { /* sem storage — segue sem banner */ }
   }
 
-  // Não logado: não precisava de checkout, fecha a janela vazia que abrimos
-  if (checkoutTab) {
-    try { checkoutTab.close() } catch { /* aba já fechada */ }
-  }
-  persistLibrary(next)
-  return next
+  // 3. Navegação GET direta para o endpoint de redirect do backend.
+  // GET em window.location.href é o jeito mais robusto em mobile: o browser
+  // não cancela um redirect que veio de um user gesture (click), mesmo que o
+  // usuário esteja offline por 1s durante o request.
+  const backUrl = 'https://preview.automacaojs.us/leitor-inteligente/#/library'
+  const redirectUrl =
+    `https://pay.automacaojs.us/api/checkout/redirect` +
+    `?slug=${encodeURIComponent(book.id)}` +
+    `&email=${encodeURIComponent(sess.email)}` +
+    `&uid=${encodeURIComponent(sess.userId)}` +
+    `&back=${encodeURIComponent(backUrl)}`
+
+  window.location.href = redirectUrl
+
+  // Nunca chega aqui (browser mudou de página). Mas tipamos o retorno.
+  return state
 }
 
 async function currentUserEmail(): Promise<string | null> {
