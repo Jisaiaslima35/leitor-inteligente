@@ -337,6 +337,7 @@ interface ChatProps {
     toggle: (t: string) => void
     stop: () => void
     isSupported: boolean
+    debugInfo?: string
   }
   chatScrollRef: React.RefObject<HTMLDivElement | null>
 }
@@ -402,6 +403,11 @@ function ProfessorChat({ book, messages, input, setInput, send, thinking, listen
         >
           {speech.status === 'speaking' ? <VolumeX size={18} /> : <Volume2 size={18} />}
         </button>
+        {speech.debugInfo && (
+          <div style={{ display: 'none' }} data-tts-debug>
+            {speech.debugInfo}
+          </div>
+        )}
         <button type="button" className="btn btn-primary" disabled={thinking} onClick={() => send(input)}>
           <Send size={16} /> {thinking ? 'Pensando…' : 'Enviar'}
         </button>

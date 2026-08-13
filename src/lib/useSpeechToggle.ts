@@ -5,29 +5,44 @@ type SpeechStatus = 'idle' | 'speaking'
 /**
  * Hook compartilhado pra NARRAÇÃO por TTS no Leitor Inteligente.
  *
- * Versão BLINDADA (Pitfall #110, 13/08/2026 + review Claude 13/08):
+ * Versão COM LOGS PRA DEBUG (Pitfall #110+v2, 13/08/2026):
  *
- * BUGS RESOLVIDOS (Claude auditar 13/08/2026):
- *  1. Botão não ficava verde em celular sem voz pt-BR instalada:
- *     Agora resolve voz com fallback → pt-BR → pt-PT → pt-* → en-US.
- *     Loga console.warn quando cai no fallback pra Isaías saber.
+ * Tudo que aconteceu até aqui:
+ *  v1: useState('idle'|'speaking'|'paused') + pause/resume nativo
+ *      → Botão ficava stuck em 'paused' no mobile, sem narrar nem parar
+ *  v2: useState binário + setTimeout(50) entre cancel e speak
+ *      → setTimeout trava em mobile quando componente desmonta
+ *  v3 (atual): 2 estados binários + requestAnimationFrame + pickVoice fallback
+ *      + onvoiceschanged listener  ← tudo isso você tá vendo agora
  *
- *  2. cancel() + speak() imediato engole utterance nova (Chrome Android):
- *     Espera onvoiceschanged ou 2x requestAnimationFrame antes de speak().
- *     Race condition evitada sem setTimeout solto.
+ * Por que ainda pode falhar no celular do Isaías:
+ *  - Chrome Android sem voz PT-BR: fala com en-US (pronúncia esquisita)
+ *    mas SEM feedback visual no botão se cair catch
+ *  - SpeechSynthesis API pode estar desabilitada por user-agent policy
+ *  - iOS Safari não suporta muito bem os eventos
  *
- * API mantida idêntica ao anterior (status, speak, stop, toggle, isSupported).
+ * LOGS ADICIONADOS: agora todo passo loga no console pra Isaías diagnosticar
+ * via chrome://inspect no celular.
  */
 export function useSpeechToggle() {
   const [status, setStatus] = useState<SpeechStatus>('idle')
+  const [debugInfo, setDebugInfo] = useState<string>('') // aparece na UI pra debug
   const currentTextRef = useRef<string | null>(null)
   const currentUtterRef = useRef<SpeechSynthesisUtterance | null>(null)
   const voicesPromiseRef = useRef<Promise<SpeechSynthesisVoice[]> | null>(null)
 
-  /**
-   * Carrega lista de vozes — Chrome Android dispara onvoiceschanged assíncrono.
-   * Cacheia a Promise pra chamadas repetidas não recarregarem.
-   */
+  const log = useCallback((msg: string) => {
+    // eslint-disable-next-line no-console
+    console.log('[TTS]', msg)
+    setDebugInfo((prev) => prev + ' | ' + msg)
+    // mantém só últimas 3 mensagens
+    setDebugInfo((prev) => {
+      const parts = prev.split(' | ').filter(Boolean)
+      const last3 = parts.slice(-3).join(' | ')
+      return last3
+    })
+  }, [])
+
   const getVoices = useCallback((): Promise<SpeechSynthesisVoice[]> => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
       return Promise.resolve([])
@@ -39,11 +54,11 @@ export function useSpeechToggle() {
     voicesPromiseRef.current = new Promise<SpeechSynthesisVoice[]>((resolve) => {
       const initial = synth.getVoices()
       if (initial && initial.length > 0) {
+        log(`Voices loaded initially: ${initial.length}`)
         resolve(initial)
         return
       }
 
-      // Chrome Android dispara onvoiceschanged depois. Espera no máximo 500ms.
       let resolved = false
       const cleanup = () => {
         synth.removeEventListener?.('voiceschanged', onChange)
@@ -52,75 +67,69 @@ export function useSpeechToggle() {
         if (resolved) return
         resolved = true
         cleanup()
-        resolve(synth.getVoices())
+        const v = synth.getVoices()
+        log(`voiceschanged fired: ${v.length}`)
+        resolve(v)
       }
       synth.addEventListener?.('voiceschanged', onChange)
 
-      // Fallback de timeout: resolve com lista vazia se nunca vier evento
       setTimeout(() => {
         if (resolved) return
         resolved = true
         cleanup()
-        resolve(synth.getVoices())
+        const v = synth.getVoices()
+        log(`Timeout 500ms - voices: ${v.length}`)
+        resolve(v)
       }, 500)
     })
 
     return voicesPromiseRef.current
-  }, [])
+  }, [log])
 
-  /**
-   * Escolhe a melhor voz PT-BR disponível com fallback progressivo.
-   * Logs warn se cair fora do pt-BR.
-   */
   const pickVoice = useCallback(async (): Promise<SpeechSynthesisVoice | null> => {
     const voices = await getVoices()
-    if (voices.length === 0) return null
+    log(`pickVoice: ${voices.length} available`)
+
+    if (voices.length === 0) {
+      log('⚠️ NENHUMA voz disponível')
+      return null
+    }
 
     const ptBR = voices.find((v) => v.lang === 'pt-BR' || v.lang === 'pt_BR')
-    if (ptBR) return ptBR
+    if (ptBR) {
+      log(`✓ pt-BR: ${ptBR.name}`)
+      return ptBR
+    }
 
-    // Fallback 1: qualquer pt-* (pt-PT, pt-AO, etc)
     const anyPt = voices.find((v) => v.lang.startsWith('pt'))
     if (anyPt) {
-      // eslint-disable-next-line no-console
-      console.warn(`[useSpeechToggle] voz pt-BR não encontrada, usando fallback ${anyPt.lang} (${anyPt.name}). Instale voz pt-BR no sistema pra melhor experiência.`)
+      log(`⚠ fallback pt-*: ${anyPt.lang} (${anyPt.name})`)
       return anyPt
     }
 
-    // Fallback 2: en-US (mais natural que francês ou espanhol pra leitor brasileiro)
     const enUS = voices.find((v) => v.lang === 'en-US' || v.lang === 'en_US' || v.lang.startsWith('en'))
     if (enUS) {
-      // eslint-disable-next-line no-console
-      console.warn(`[useSpeechToggle] nenhuma voz pt-* instalada. Usando fallback ${enUS.lang} (${enUS.name}). Texto será narrado em inglês (com pronúncia estranha). Instale voz pt-BR no sistema.`)
+      log(`⚠ fallback en: ${enUS.lang} (${enUS.name})`)
       return enUS
     }
 
-    // Último fallback: primeira voz disponível
-    if (voices[0]) {
-      // eslint-disable-next-line no-console
-      console.warn(`[useSpeechToggle] nenhuma voz pt/en disponível, usando primeira voz do sistema: ${voices[0].lang} (${voices[0].name}).`)
-      return voices[0]
-    }
-    return null
-  }, [getVoices])
+    log(`⚠ primeira voz: ${voices[0].lang} (${voices[0].name})`)
+    return voices[0]
+  }, [getVoices, log])
 
   const stop = useCallback(() => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
     try {
       window.speechSynthesis.cancel()
-    } catch {
-      // ignore
+    } catch (e) {
+      log(`stop cancel fail: ${(e as Error).message}`)
     }
     currentTextRef.current = null
     currentUtterRef.current = null
+    log('stopped')
     setStatus('idle')
-  }, [])
+  }, [log])
 
-  /**
-   * Espera 2x requestAnimationFrame pra garantir que cancel() assíncrono
-   * do Chrome Android realmente processou antes de falar de novo.
-   * Sem setTimeout solto.
-   */
   const waitForCancel = useCallback((): Promise<void> => {
     return new Promise((resolve) => {
       let rafCount = 0
@@ -137,10 +146,12 @@ export function useSpeechToggle() {
   }, [])
 
   const speak = useCallback(async (text: string) => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      log('❌ TTS não suportado neste navegador')
+      return
+    }
     const synth = window.speechSynthesis
 
-    // Texto vazio = pra tudo
     if (!text || !text.trim()) {
       try { synth.cancel() } catch { /* ignore */ }
       currentTextRef.current = null
@@ -149,27 +160,33 @@ export function useSpeechToggle() {
       return
     }
 
-    // Cancela o anterior
-    try { synth.cancel() } catch { /* ignore */ }
-    // Espera 2 frames pra cancel() processar (Chrome Android bug)
-    await waitForCancel()
+    log(`speak("${text.slice(0, 30)}...")`)
+    log(`synth.speaking antes: ${synth.speaking}, pending: ${synth.pending}`)
 
-    // Resolve voz (com fallback)
+    try { synth.cancel() } catch { /* ignore */ }
+    await waitForCancel()
+    log(`after 2 RAF: cancelled`)
+
     const voice = await pickVoice()
 
     const utter = new SpeechSynthesisUtterance(text)
     if (voice) utter.voice = voice
-    utter.lang = voice?.lang || 'pt-BR' // lang hint (alguns browsers ignoram utter.voice)
+    utter.lang = voice?.lang || 'pt-BR'
     utter.rate = 1
 
+    utter.onstart = () => {
+      log(`utter.onstart fired`)
+    }
     utter.onend = () => {
+      log(`utter.onend`)
       if (currentTextRef.current === text) {
         currentTextRef.current = null
         currentUtterRef.current = null
         setStatus('idle')
       }
     }
-    utter.onerror = () => {
+    utter.onerror = (event) => {
+      log(`utter.onerror: ${event.error}`)
       if (currentTextRef.current === text) {
         currentTextRef.current = null
         currentUtterRef.current = null
@@ -179,18 +196,19 @@ export function useSpeechToggle() {
 
     currentTextRef.current = text
     currentUtterRef.current = utter
-    setStatus('speaking') // marca ANTES de speak() pra UI atualizar imediato
+    setStatus('speaking')
+    log(`state → speaking`)
 
     try {
       synth.speak(utter)
+      log(`synth.speak() chamado`)
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[useSpeechToggle] synth.speak falhou:', err)
+      log(`❌ synth.speak falhou: ${(err as Error).message}`)
       currentTextRef.current = null
       currentUtterRef.current = null
       setStatus('idle')
     }
-  }, [waitForCancel, pickVoice])
+  }, [waitForCancel, pickVoice, log])
 
   const toggle = useCallback((text: string) => {
     if (status === 'speaking') {
@@ -212,5 +230,5 @@ export function useSpeechToggle() {
     }
   }, [])
 
-  return { status, speak, stop, toggle, isSupported }
+  return { status, speak, stop, toggle, isSupported, debugInfo }
 }
