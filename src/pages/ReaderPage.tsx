@@ -150,7 +150,10 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
   useEffect(() => () => {
     recognitionRef.current?.stop()
     recognitionRef.current = null
-    speech.stop()
+    // NÃO chama speech.stop() aqui — quando status vira 'speaking', o
+    // objeto `speech` muda (useMemo no hook), o useEffect re-roda cleanup
+    // e mata a fala que acabou de começar. O hook já tem cleanup próprio
+    // no unmount via useEffect([], []).
   }, [speech])
 
   useEffect(() => {
@@ -392,6 +395,13 @@ function ProfessorChat({ book, messages, input, setInput, send, thinking, listen
           type="button"
           className={`icon-btn ${speech.status === 'speaking' ? 'is-on is-speaking' : ''}`}
           onClick={() => {
+            // Garante cancel() nativo do navegador a qualquer momento,
+            // mesmo se o estado React do hook tenha ficado travado em 'idle' ou 'speaking'.
+            try {
+              if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+                window.speechSynthesis.cancel()
+              }
+            } catch { /* ignore */ }
             const lastAi = [...messages].reverse().find((m) => m.role === 'ai')
             if (!lastAi) return
             speech.toggle(lastAi.text)
@@ -403,26 +413,15 @@ function ProfessorChat({ book, messages, input, setInput, send, thinking, listen
         >
           {speech.status === 'speaking' ? <VolumeX size={18} /> : <Volume2 size={18} />}
         </button>
-        {speech.debugInfo && (
-          <div
-            data-tts-debug
-            style={{
-              fontSize: '11px',
-              color: '#888',
-              padding: '4px 8px',
-              wordBreak: 'break-word',
-              background: '#f5f5f5',
-              borderRadius: '4px',
-              marginTop: '4px',
-            }}
-          >
-            🔍 {speech.debugInfo}
-          </div>
-        )}
         <button type="button" className="btn btn-primary" disabled={thinking} onClick={() => send(input)}>
-          <Send size={16} /> {thinking ? 'Pensando…' : 'Enviar'}
+          <Send size={16} /> <span className="label">{thinking ? 'Pensando…' : 'Enviar'}</span>
         </button>
       </div>
+      {speech.debugInfo && (
+        <div className="tts-debug" data-tts-debug title="Debug TTS — usado pra diagnóstico via chrome://inspect">
+          🔍 {speech.debugInfo}
+        </div>
+      )}
     </div>
   )
 }

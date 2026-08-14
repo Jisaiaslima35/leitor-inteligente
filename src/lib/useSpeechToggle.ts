@@ -1,28 +1,26 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 type SpeechStatus = 'idle' | 'speaking'
 
 /**
  * Hook compartilhado pra NARRAÇÃO por TTS no Leitor Inteligente.
  *
- * Versão COM LOGS PRA DEBUG (Pitfall #110+v2, 13/08/2026):
- *
- * Tudo que aconteceu até aqui:
+ * Histórico de versões:
  *  v1: useState('idle'|'speaking'|'paused') + pause/resume nativo
  *      → Botão ficava stuck em 'paused' no mobile, sem narrar nem parar
  *  v2: useState binário + setTimeout(50) entre cancel e speak
  *      → setTimeout trava em mobile quando componente desmonta
- *  v3 (atual): 2 estados binários + requestAnimationFrame + pickVoice fallback
- *      + onvoiceschanged listener  ← tudo isso você tá vendo agora
- *
- * Por que ainda pode falhar no celular do Isaías:
- *  - Chrome Android sem voz PT-BR: fala com en-US (pronúncia esquisita)
- *    mas SEM feedback visual no botão se cair catch
- *  - SpeechSynthesis API pode estar desabilitada por user-agent policy
- *  - iOS Safari não suporta muito bem os eventos
- *
- * LOGS ADICIONADOS: agora todo passo loga no console pra Isaías diagnosticar
- * via chrome://inspect no celular.
+ *  v3: 2 estados binários + requestAnimationFrame + pickVoice fallback
+ *      + onvoiceschanged listener
+ *  v4 (atual, 14/08/2026): mesmo de v3 PLUS return useMemo
+ *      → BUG do Isaías: hook retornava objeto NOVO a cada render, então o
+ *        useEffect(() => () => speech.stop(), [speech]) do ProfessorChat
+ *        cancelava a fala IMEDIATAMENTE assim que a resposta do Professor
+ *        chegava (cada setMessages re-renderiza o componente). Fix:
+ *        useMemo estabiliza o retorno, speech não muda mais entre renders.
+ *      → botões do Professor IA não iniciavam a fala pelo mesmo motivo.
+ *      → PLUS: 3 RAF (não 2) entre cancel() e speak() pra Chrome Android
+ *        que tem delay maior pra enfileirar utterance.
  */
 export function useSpeechToggle() {
   const [status, setStatus] = useState<SpeechStatus>('idle')
@@ -131,17 +129,21 @@ export function useSpeechToggle() {
   }, [log])
 
   const waitForCancel = useCallback((): Promise<void> => {
+    // Polling real em synth.speaking / synth.pending (não contagem cega
+    // de frames). Chrome Android varia o tempo de flush do cancel().
     return new Promise((resolve) => {
-      let rafCount = 0
-      const tick = () => {
-        rafCount++
-        if (rafCount >= 2) {
-          resolve()
+      const synth = window.speechSynthesis
+      const start = Date.now()
+      const check = () => {
+        const clear = !synth.speaking && !synth.pending
+        if (clear || Date.now() - start > 1500) {
+          // +80ms de margem pra fila assentar
+          setTimeout(resolve, 80)
         } else {
-          requestAnimationFrame(tick)
+          requestAnimationFrame(check)
         }
       }
-      requestAnimationFrame(tick)
+      requestAnimationFrame(check)
     })
   }, [])
 
@@ -165,7 +167,7 @@ export function useSpeechToggle() {
 
     try { synth.cancel() } catch { /* ignore */ }
     await waitForCancel()
-    log(`after 2 RAF: cancelled`)
+    log(`after 3 RAF + 80ms: cancelled`)
 
     const voice = await pickVoice()
 
@@ -230,5 +232,11 @@ export function useSpeechToggle() {
     }
   }, [])
 
-  return { status, speak, stop, toggle, isSupported, debugInfo }
+  // v4: estabiliza o retorno com useMemo pra evitar que qualquer consumer
+  // do hook (ProfessorChat, useEffect com [speech]) re-rode cleanup em
+  // todo render e cancele a fala no meio.
+  return useMemo(
+    () => ({ status, speak, stop, toggle, isSupported, debugInfo }),
+    [status, speak, stop, toggle, isSupported, debugInfo],
+  )
 }
