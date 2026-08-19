@@ -124,6 +124,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           provider: 'google',
           options: {
             redirectTo: `${window.location.origin}${window.location.pathname}`,
+            // Força o seletor de contas do Google (não auto-selecionar a do perfil).
+            // Equivalente ao prompt=select_account da OAuth2 spec, repassado pelo
+            // Supabase ao authorization endpoint do Google.
+            queryParams: {
+              prompt: 'select_account',
+            },
           },
         })
         return error ? { ok: false, error: error.message } : { ok: true }
