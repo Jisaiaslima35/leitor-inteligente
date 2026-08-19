@@ -118,6 +118,7 @@ class AsaasProvider(PaymentProvider):
         customer_id: str,
         success_url: str,
         cancel_url: str,
+        metadata: dict | None = None,
     ) -> CheckoutSession:
         """Cria customer + payment com billingType=UNDEFINED (Asaas permite cliente escolher)."""
         # 1. Cria/busca customer
@@ -128,7 +129,14 @@ class AsaasProvider(PaymentProvider):
 
         # 2. Cria payment UNDEFINED (cliente escolhe método no checkout)
         amount_brl = max(5.00, amount_cents / 100)
-        external_reference = f"{product_id}|{customer_id}|{customer_email}"
+        # externalReference: "product_id|customer_id|email|traffic_source|..."
+        # metadata livre vai como 4ª+ posição; webhook deserializa em get_order_metadata
+        ext_parts = [product_id, customer_id, customer_email]
+        if metadata:
+            # serializa dict como chave=valor, valor escapado
+            for k, v in metadata.items():
+                ext_parts.append(f'{k}={v}')
+        external_reference = '|'.join(ext_parts)
 
         payload = {
             'customer': asaas_customer_id,
@@ -217,13 +225,25 @@ class AsaasProvider(PaymentProvider):
             return None
 
     def get_order_metadata(self, event: dict) -> dict:
-        """External reference: "ebook_slug|customer_id|email"."""
+        """External reference: "ebook_slug|customer_id|email|traffic_source=...".
+
+        Retorna dict com chaves: ebook_id, customer_id, customer_email + qualquer
+        metadata extra como traffic_source.
+        """
         ext = event.get('payment', {}).get('externalReference') or event.get('externalReference') or ''
-        if '|' in ext:
-            parts = ext.split('|', 2)
-            return {
-                'ebook_id': parts[0] if len(parts) > 0 else '',
-                'customer_id': parts[1] if len(parts) > 1 else '',
-                'customer_email': parts[2] if len(parts) > 2 else '',
-            }
-        return {'ebook_id': ext}
+        if '|' not in ext:
+            return {'ebook_id': ext}
+        # split em no máximo 3 partes (preserva '|' dentro de metadata)
+        parts = ext.split('|', 3)
+        result = {
+            'ebook_id': parts[0] if len(parts) > 0 else '',
+            'customer_id': parts[1] if len(parts) > 1 else '',
+            'customer_email': parts[2] if len(parts) > 2 else '',
+        }
+        # 4ª parte contém metadata serializado: 'traffic_source=instagram;outro=valor'
+        if len(parts) > 3 and parts[3]:
+            for kv in parts[3].split('|'):
+                if '=' in kv:
+                    k, v = kv.split('=', 1)
+                    result[k] = v
+        return result

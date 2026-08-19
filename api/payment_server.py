@@ -188,13 +188,14 @@ def checkout_redirect():
     ebook_slug = request.args.get('slug')
     customer_email = request.args.get('email')
     customer_id = request.args.get('uid')
+    traffic_source = request.args.get('src')  # instagram/youtube/whatsapp/outro
     back_url = request.args.get('back') or 'https://preview.automacaojs.us/leitor-inteligente/#/library'
 
     if not (ebook_slug and customer_email):
         return redirect('https://preview.automacaojs.us/leitor-inteligente/#/store')
 
     status, body = _supabase_get(
-        f'ebooks?slug=eq.{ebook_slug}&select=id,title,price_cents,slug'
+        f'ebooks?slug=eq.{ebook_slug}&select=id,title,price_cents,slug,shareable'
     )
     if status != 200:
         return redirect(
@@ -213,8 +214,12 @@ def checkout_redirect():
     ebook_id = ebook['id']
     product_name = ebook['title']
     amount_cents = int(ebook.get('price_cents') or 2990)
+    # shareable=false = livro privado (testes, demos). Bloqueia checkout de campanha.
+    if ebook.get('shareable') is False:
+        return redirect('https://preview.automacaojs.us/leitor-inteligente/#/store?error=not_shareable')
 
     provider = get_provider()
+    checkout_metadata = {'traffic_source': traffic_source} if traffic_source else None
     try:
         session = provider.create_checkout(
             amount_cents=amount_cents,
@@ -224,6 +229,7 @@ def checkout_redirect():
             customer_id=customer_id or customer_email,
             success_url=back_url,
             cancel_url='https://preview.automacaojs.us/leitor-inteligente/#/store',
+            metadata=checkout_metadata,
         )
     except Exception as e:
         print(f'[checkout/redirect] erro provider: {e}', flush=True)
@@ -231,7 +237,7 @@ def checkout_redirect():
             f'https://preview.automacaojs.us/leitor-inteligente/#/store?error=provider_failed'
         )
 
-    _supabase_post('purchases', {
+    purchase_payload = {
         'user_id': customer_id or customer_email,
         'ebook_id': ebook_id,
         'amount_cents': amount_cents,
@@ -239,7 +245,10 @@ def checkout_redirect():
         'payment_method': provider.name,
         'payment_id': session.external_id or 'pending',
         'status': 'pending',
-    })
+    }
+    if traffic_source:
+        purchase_payload['traffic_source'] = traffic_source
+    _supabase_post('purchases', purchase_payload)
 
     return redirect(session.checkout_url, code=302)
 
@@ -251,6 +260,7 @@ def checkout_create():
     ebook_slug = data.get('ebook_slug')
     customer_email = data.get('customer_email')
     customer_id = data.get('customer_id')
+    traffic_source = data.get('traffic_source')  # instagram/youtube/whatsapp/outro
     success_url = data.get('success_url', 'https://preview.automacaojs.us/leitor-inteligente/#/library')
     cancel_url = data.get('cancel_url', 'https://preview.automacaojs.us/leitor-inteligente/#/store')
 
@@ -258,7 +268,7 @@ def checkout_create():
         return jsonify({'ok': False, 'error': 'ebook_slug e customer_email obrigatórios'}), 400
 
     # 1. Busca ebook
-    status, body = _supabase_get(f'ebooks?slug=eq.{ebook_slug}&select=id,title,price_cents,slug')
+    status, body = _supabase_get(f'ebooks?slug=eq.{ebook_slug}&select=id,title,price_cents,slug,shareable')
     if status != 200:
         return jsonify({'ok': False, 'error': f'erro ao buscar ebook: {body}'}), 500
     try:
@@ -272,9 +282,12 @@ def checkout_create():
     ebook_id = ebook['id']
     product_name = ebook['title']
     amount_cents = int(ebook['price_cents'] or 2990)
+    if ebook.get('shareable') is False:
+        return jsonify({'ok': False, 'error': 'ebook não-divulgável (shareable=false)'}), 403
 
     # 2. Cria checkout via provider
     provider = get_provider()
+    checkout_metadata = {'traffic_source': traffic_source} if traffic_source else None
     try:
         session = provider.create_checkout(
             amount_cents=amount_cents,
@@ -284,12 +297,13 @@ def checkout_create():
             customer_id=customer_id or customer_email,
             success_url=success_url,
             cancel_url=cancel_url,
+            metadata=checkout_metadata,
         )
     except Exception as e:
         return jsonify({'ok': False, 'error': f'erro Cakto: {e}'}), 500
 
     # 3. Cria purchase 'pending' pra rastreamento
-    _supabase_post('purchases', {
+    purchase_payload = {
         'user_id': customer_id or customer_email,
         'ebook_id': ebook_id,
         'amount_cents': amount_cents,
@@ -297,7 +311,10 @@ def checkout_create():
         'payment_method': provider.name,
         'payment_id': session.external_id or 'pending',
         'status': 'pending',
-    })
+    }
+    if traffic_source:
+        purchase_payload['traffic_source'] = traffic_source
+    _supabase_post('purchases', purchase_payload)
 
     return jsonify({
         'ok': True,
@@ -335,6 +352,7 @@ def webhook(provider_name: str = 'cakto'):
     meta = provider.get_order_metadata(event)
     ebook_slug = meta.get('ebook_id')
     customer_id = meta.get('customer_id')
+    traffic_source = meta.get('traffic_source')  # instagram/youtube/whatsapp/outro
 
     if not (order_id and email):
         return jsonify({'ok': False, 'error': 'event sem order_id/email'}), 400
@@ -368,6 +386,8 @@ def webhook(provider_name: str = 'cakto'):
             'consumed_at': None,  # Marcado por upload_book.py quando indexação termina
             'amount_cents': amount or 1000,  # R$10 (modelo novo: por livro)
         }
+        if traffic_source:
+            upsert_body['traffic_source'] = traffic_source
         upsert_headers = {
             'apikey': SUPABASE_SR,
             'Authorization': f'Bearer {SUPABASE_SR}',

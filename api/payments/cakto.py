@@ -111,6 +111,7 @@ class CaktoProvider(PaymentProvider):
         customer_id: str,
         success_url: str,
         cancel_url: str,
+        metadata: dict | None = None,  # Cakto ignora (não usa externalReference, mas aceita pra interface)
     ) -> CheckoutSession:
         """Cria produto dinâmico e retorna URL de checkout.
 

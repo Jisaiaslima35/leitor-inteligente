@@ -44,8 +44,13 @@ class PaymentProvider(ABC):
         customer_id: str,
         success_url: str,
         cancel_url: str,
+        metadata: dict | None = None,
     ) -> CheckoutSession:
-        """Cria sessão de checkout. Retorna URL onde o cliente vai pagar."""
+        """Cria sessão de checkout. Retorna URL onde o cliente vai pagar.
+
+        `metadata`: dict livre (ex: {traffic_source: 'instagram'}) que o provider
+        precisa preservar até o webhook via externalReference ou descrição.
+        """
         ...
 
     @abstractmethod
