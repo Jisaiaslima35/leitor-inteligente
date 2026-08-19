@@ -21,26 +21,34 @@ import { AdminPage } from './pages/AdminPage'
 import { HomePage } from './pages/HomePage'
 import { LoginPage } from './pages/LoginPage'
 import { UploadPage } from './pages/UploadPage'
+import { BuyPage } from './pages/BuyPage'
 import { CheckoutModal } from './components/CheckoutModal'
 import { AuthProvider, useAuth } from './lib/AuthContext'
 import { SUPABASE_READY } from './lib/supabase'
 
-export type Route = 'home' | 'store' | 'library' | 'reader' | 'admin' | 'login' | 'upload'
+export type Route = 'home' | 'store' | 'library' | 'reader' | 'admin' | 'login' | 'upload' | 'comprar'
 
 const PROTECTED: Route[] = ['library', 'reader', 'admin', 'upload']
 
-function readRoute(): { route: Route; bookId?: string } {
+/** Lê o hash e também extrai `?src=...` (traffic source da campanha). */
+function readRoute(): { route: Route; bookId?: string; trafficSource?: string } {
   if (typeof window === 'undefined') return { route: 'home' }
-  const hash = window.location.hash.replace('#/', '')
-  const [routePart, bookPart] = hash.split('/')
+  const rawHash = window.location.hash.replace('#/', '')
+  const [pathPart, queryPart] = rawHash.split('?')
+  const [routePart, bookPart] = pathPart.split('/')
   const route = (routePart as Route) || 'home'
   const bookId = bookPart ? decodeURIComponent(bookPart) : undefined
-  return { route, bookId }
+  let trafficSource: string | undefined
+  if (queryPart) {
+    const params = new URLSearchParams(queryPart)
+    trafficSource = params.get('src') || undefined
+  }
+  return { route, bookId, trafficSource }
 }
 
 function InnerApp() {
   const { user, isAuthenticated, isReady, signOut } = useAuth()
-  const [{ route, bookId }, setRouteState] = useState(() => readRoute())
+  const [{ route, bookId, trafficSource }, setRouteState] = useState(() => readRoute())
   // Inicializa vazio; o useEffect de sync popula quando autenticado
   const [library, setLibrary] = useState<LibraryState>({ purchases: [] })
   const [progress, setProgress] = useState<ProgressState>({})
@@ -250,6 +258,14 @@ function InnerApp() {
             catalog={CATALOG}
             user={user}
             onReset={handleResetLibrary}
+          />
+        )}
+        {route === 'comprar' && bookId && (
+          <BuyPage
+            ebookId={bookId}
+            trafficSource={trafficSource ?? null}
+            onGoStore={() => navigate('store')}
+            onGoLibrary={() => navigate('library')}
           />
         )}
           </>
