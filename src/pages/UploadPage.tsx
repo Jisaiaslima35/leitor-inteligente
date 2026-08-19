@@ -12,7 +12,7 @@ interface Props {
 }
 
 const VITE_PAYMENT_SERVER = (import.meta as any).env?.VITE_PAYMENT_SERVER_URL || 'https://pay.automacaojs.us'
-const UPLOAD_FEE_CENTS = 1500
+const UPLOAD_FEE_CENTS = 1000  // R$10 por livro (modelo 1 pagamento = 1 upload)
 
 export function UploadPage({ onBack, onSuccess }: Props) {
   const { user } = useAuth()
@@ -252,10 +252,11 @@ export function UploadPage({ onBack, onSuccess }: Props) {
         <div className="upload-info">
           <strong>Como funciona:</strong>
           <ol>
-            <li>Você paga uma taxa de processamento de R$15 (Asaas — PIX, cartão ou boleto)</li>
+            <li>Você paga uma taxa de processamento de R$10 por livro (Asaas — PIX, cartão ou boleto)</li>
             <li>Após confirmar, faz upload do PDF</li>
             <li>O sistema processa em background (1-30 min dependendo do tamanho)</li>
             <li>Livro aparece automaticamente na sua biblioteca, pronto pra ler e perguntar</li>
+            <li>Para subir outro livro, é só pagar a taxa de novo (R$10 por livro)</li>
           </ol>
         </div>
 
@@ -289,7 +290,7 @@ export function UploadPage({ onBack, onSuccess }: Props) {
               <li>Extração automática de texto (ou OCR se escaneado)</li>
               <li>Geração de embeddings semânticos pra RAG do Professor IA</li>
               <li>Armazenamento seguro e isolado no seu perfil (RLS)</li>
-              <li>Acesso válido por 365 dias (pague 1 vez, use quantas vezes quiser)</li>
+              <li>Pagamento único por livro (cada novo upload = nova taxa de R$10)</li>
             </ul>
             {errorMsg && (
               <div className="auth-msg auth-msg-err" style={{ marginBottom: 12 }}>
@@ -312,8 +313,8 @@ export function UploadPage({ onBack, onSuccess }: Props) {
         {access === 'paid' && status === 'idle' && (
           <>
             <div className="auth-msg auth-msg-ok" style={{ marginBottom: 16 }}>
-              <CheckCircle size={14} /> Taxa paga! Acesso válido até{' '}
-              <strong>{expiresAt ? new Date(expiresAt).toLocaleDateString('pt-BR') : '—'}</strong>
+              <CheckCircle size={14} /> Taxa paga. Você pode subir <strong>1 livro</strong>. Para enviar
+              outro, é só pagar a taxa de novo.
             </div>
             <div className="upload-form">
               <label className="upload-drop">
