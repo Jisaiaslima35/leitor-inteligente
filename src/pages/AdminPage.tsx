@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { RefreshCcw, ShoppingBag, Users, Library, Shield, ChevronUp, ChevronDown, Search, Trash2, Upload, BookOpen, CheckCircle2, Circle } from 'lucide-react'
+import { RefreshCcw, ShoppingBag, Users, Library, Shield, ChevronUp, ChevronDown, Search, Trash2, Upload, BookOpen, CheckCircle2, Circle, Pencil, X } from 'lucide-react'
 import type { User } from '../domain/types'
 import type { LibraryState, ProgressState } from '../domain/library'
 import { ownsBook } from '../domain/library'
@@ -7,6 +7,8 @@ import { getProgress } from '../domain/progress'
 import { supabase, SUPABASE_READY } from '../lib/supabase'
 import { CampaignLinkButton } from '../components/CampaignLinkButton'
 import { ADMIN_USER_ID, isAdminUser } from '../lib/admin'
+
+const ADMIN_TOKEN = 'admin-bypass-leitor-2026'
 
 interface Props {
   library: LibraryState
@@ -177,12 +179,87 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
   }
 
   const deleteEbook = async (ebook: EbookRow) => {
-    if (!confirm(`Excluir "${ebook.title}"? Esta ação não pode ser desfeita.`)) return
+    if (!confirm(`Excluir "${ebook.title}"?\n\nIsso remove o livro, TODAS as vendas e liberações de biblioteca relacionadas, e apaga o PDF/capa do storage.\n\nEsta ação não pode ser desfeita.`)) return
     setBusyId(ebook.id)
-    const { error } = await supabase.from('ebooks').delete().eq('id', ebook.id)
-    if (error) setErr(error.message)
-    await loadAll()
-    setBusyId(null)
+    setErr(null)
+    try {
+      const resp = await fetch(
+        `/leitor-inteligente/upload-api/api/admin/delete-book?ebook_id=${encodeURIComponent(ebook.id)}`,
+        {
+          method: 'DELETE',
+          headers: { 'X-Admin-Token': ADMIN_TOKEN },
+        },
+      )
+      const json = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        setErr(`❌ ${json.error || `HTTP ${resp.status}`}`)
+      } else {
+        setErr(null)
+        alert(`✅ ${json.message || 'Livro removido.'}`)
+      }
+    } catch (e: any) {
+      setErr(`❌ ${e?.message || 'Falha ao excluir'}`)
+    } finally {
+      await loadAll()
+      setBusyId(null)
+    }
+  }
+
+  // Modal de edição (título, slug, autor, preço, is_published, shareable).
+  // Sem descrição por enquanto (Isaías msg 19/08: descrição fica pra depois).
+  const [editing, setEditing] = useState<EbookRow | null>(null)
+  const [editTitle, setEditTitle] = useState('')
+  const [editSlug, setEditSlug] = useState('')
+  const [editAuthor, setEditAuthor] = useState('')
+  const [editPrice, setEditPrice] = useState('')
+  const [editPublished, setEditPublished] = useState(true)
+  const [editShareable, setEditShareable] = useState(true)
+  const [editBusy, setEditBusy] = useState(false)
+
+  const openEdit = (ebook: EbookRow) => {
+    setEditing(ebook)
+    setEditTitle(ebook.title)
+    setEditSlug(ebook.slug)
+    setEditAuthor(ebook.author || '')
+    setEditPrice(String(ebook.price_cents))
+    setEditPublished(ebook.is_published)
+    setEditShareable(true) // default true; ebooks admin normalmente são compartilháveis
+    setErr(null)
+  }
+  const closeEdit = () => {
+    if (editBusy) return
+    setEditing(null)
+  }
+  const submitEdit = async () => {
+    if (!editing) return
+    setEditBusy(true)
+    setErr(null)
+    try {
+      const resp = await fetch('/leitor-inteligente/upload-api/api/admin/update-book', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN },
+        body: JSON.stringify({
+          ebook_id: editing.id,
+          title: editTitle.trim() || editing.title,
+          slug: editSlug.trim() || editing.slug,
+          author: editAuthor.trim() || null,
+          price_cents: Math.max(0, parseInt(editPrice, 10) || 0),
+          is_published: editPublished,
+          shareable: editShareable,
+        }),
+      })
+      const json = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        setErr(`❌ ${json.error || `HTTP ${resp.status}`}`)
+      } else {
+        setEditing(null)
+      }
+    } catch (e: any) {
+      setErr(`❌ ${e?.message || 'Falha ao salvar'}`)
+    } finally {
+      setEditBusy(false)
+      await loadAll()
+    }
   }
 
   const submitAdminUpload = async (e: React.FormEvent) => {
@@ -455,6 +532,15 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
                         {book.is_published ? <Circle size={14} /> : <CheckCircle2 size={14} />}
                         {book.is_published ? 'Despublicar' : 'Publicar'}
                       </button>
+                      <button
+                        className="btn"
+                        disabled={busyId === book.id}
+                        onClick={() => openEdit(book)}
+                        title="Editar metadados (título, slug, autor, preço)"
+                      >
+                        <Pencil size={14} />
+                        Editar
+                      </button>
                       <CampaignLinkButton ebookSlug={book.slug} />
                       <button
                         className="btn btn-danger"
@@ -573,6 +659,70 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Modal de edição inline (sem descrição por enquanto, Isaías msg 19/08). */}
+      {editing && (
+        <div
+          onClick={closeEdit}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1000, padding: 16,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'var(--bg-primary)', borderRadius: 12, padding: 24,
+              maxWidth: 480, width: '100%', boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ margin: 0 }}>
+                <Pencil size={18} style={{ display: 'inline', marginRight: 6, verticalAlign: 'text-bottom' }} />
+                Editar livro
+              </h3>
+              <button className="btn" onClick={closeEdit} disabled={editBusy}><X size={14} /></button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <small>Título</small>
+                <input type="text" value={editTitle} onChange={(e) => setEditTitle(e.target.value)}
+                  style={{ padding: 8, borderRadius: 8, border: '1px solid var(--border)' }} />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <small>Slug</small>
+                <input type="text" value={editSlug} onChange={(e) => setEditSlug(e.target.value)}
+                  style={{ padding: 8, borderRadius: 8, border: '1px solid var(--border)' }} />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <small>Autor</small>
+                <input type="text" value={editAuthor} onChange={(e) => setEditAuthor(e.target.value)}
+                  style={{ padding: 8, borderRadius: 8, border: '1px solid var(--border)' }} />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <small>Preço (centavos — 990 = R$ 9,90)</small>
+                <input type="number" min="0" value={editPrice} onChange={(e) => setEditPrice(e.target.value)}
+                  style={{ padding: 8, borderRadius: 8, border: '1px solid var(--border)' }} />
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type="checkbox" checked={editPublished} onChange={(e) => setEditPublished(e.target.checked)} />
+                <small>Publicado (aparece em Loja/Início)</small>
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type="checkbox" checked={editShareable} onChange={(e) => setEditShareable(e.target.checked)} />
+                <small>Compartilhável (link de campanha funciona)</small>
+              </label>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 20, justifyContent: 'flex-end' }}>
+              <button className="btn" onClick={closeEdit} disabled={editBusy}>Cancelar</button>
+              <button className="btn btn-primary" onClick={submitEdit} disabled={editBusy}>
+                {editBusy ? 'Salvando…' : 'Salvar'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </section>

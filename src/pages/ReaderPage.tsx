@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { ChevronLeft, ChevronRight, Mic, Send, Volume2, VolumeX } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Mic, Pause, Play, Send, Sparkles, Volume2, VolumeX, ZoomIn, ZoomOut } from 'lucide-react'
 import type { Book } from '../domain/types'
 import type { ProgressState } from '../domain/library'
 import { getProgress } from '../domain/progress'
@@ -139,6 +139,42 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
       text: `Olá! Sou o Professor IA de "${book.title}". Pergunte qualquer coisa sobre a obra e eu respondo com base no conteúdo selecionado do livro.`,
     },
   ])
+  // Zoom persistente — default 1.3 segue o valor antigo. Kindle-like.
+  const [scale, setScale] = useState<number>(() => {
+    if (typeof window === 'undefined') return 1.3
+    const saved = parseFloat(localStorage.getItem('leitor-ia:pdf-scale') || '1.3')
+    return Number.isFinite(saved) && saved >= 0.8 && saved <= 3 ? saved : 1.3
+  })
+  const saveScale = useCallback((next: number) => {
+    setScale(next)
+    try { localStorage.setItem('leitor-ia:pdf-scale', String(next)) } catch {}
+  }, [])
+  // Texto da página atual (extraído pelo PdfViewer via getTextContent).
+  // Usado pelo TTS do PDF (Kindle-style).
+  const [pageText, setPageText] = useState('')
+  // TTS do PDF (independente do TTS das respostas do Professor).
+  const [pdfTtsStatus, setPdfTtsStatus] = useState<'idle' | 'speaking'>('idle')
+  // Para o TTS quando o user troca de página, pra não narrar a página errada
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try { window.speechSynthesis.cancel() } catch {}
+    }
+    setPdfTtsStatus('idle')
+  }, [page])
+  // Onboarding do Professor IA: mostra dicas só na 1ª vez que o user abre
+  // um livro nesta máquina. Dismiss persiste em localStorage.
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    if (typeof window === 'undefined') return false
+    try { return !localStorage.getItem('leitor-ia:onboarding-dismissed') } catch { return false }
+  })
+  const dismissOnboarding = () => {
+    try { localStorage.setItem('leitor-ia:onboarding-dismissed', '1') } catch {}
+    setShowOnboarding(false)
+  }
+  // Quando o user envia uma pergunta (chips ou input), onboarding some
+  useEffect(() => {
+    if (showOnboarding && messages.some((m) => m.id !== 'greet')) dismissOnboarding()
+  }, [messages, showOnboarding])
   const [input, setInput] = useState('')
   const [listening, setListening] = useState(false)
   const [thinking, setThinking] = useState(false)
@@ -270,26 +306,96 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
         <small>{book.author}</small>
       </div>
       <div className="pdf-toolbar">
-        <button className="icon-btn" onClick={() => handlePageChange(page - 1)} aria-label="Página anterior">
-          <ChevronLeft size={18} />
-        </button>
-        <span className="page-label">Página</span>
-        <input
-          type="number"
-          min={1}
-          max={book.totalPages}
-          value={page}
-          onChange={(e) => setPage(Math.min(book.totalPages, Math.max(1, Number(e.target.value) || 1)))}
-          onBlur={handlePageInputBlur}
-        />
-        <span className="page-label">de {book.totalPages}</span>
-        <button className="icon-btn" onClick={() => handlePageChange(page + 1)} aria-label="Próxima página">
-          <ChevronRight size={18} />
-        </button>
-        <span className="page-progress-meta" aria-label="Progresso de leitura">
-          <strong>{percent}%</strong>
-          <span className="page-progress-time">· {remainingLabel}</span>
-        </span>
+        {/* Fileira 1 — navegação de página (compacta em mobile) */}
+        <div className="pdf-toolbar-row">
+          <button className="icon-btn" onClick={() => handlePageChange(page - 1)} aria-label="Página anterior">
+            <ChevronLeft size={18} />
+          </button>
+          <span className="page-label">Página</span>
+          <input
+            type="number"
+            min={1}
+            max={book.totalPages}
+            value={page}
+            onChange={(e) => setPage(Math.min(book.totalPages, Math.max(1, Number(e.target.value) || 1)))}
+            onBlur={handlePageInputBlur}
+          />
+          <span className="page-label">de {book.totalPages}</span>
+          <button className="icon-btn" onClick={() => handlePageChange(page + 1)} aria-label="Próxima página">
+            <ChevronRight size={18} />
+          </button>
+          <span className="page-progress-meta" aria-label="Progresso de leitura">
+            <strong>{percent}%</strong>
+            <span className="page-progress-time">· {remainingLabel}</span>
+          </span>
+        </div>
+        {/* Fileira 2 — ações: zoom, TTS, resumir (não conflita com navegação em mobile) */}
+        <div className="pdf-toolbar-row pdf-toolbar-actions">
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => saveScale(Math.max(0.8, +(scale - 0.3).toFixed(1)))}
+            disabled={scale <= 0.8}
+            title="Diminuir zoom"
+            aria-label="Diminuir zoom"
+          >
+            <ZoomOut size={16} />
+          </button>
+          <span className="zoom-label" aria-live="polite">{Math.round(scale * 100)}%</span>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => saveScale(Math.min(3, +(scale + 0.3).toFixed(1)))}
+            disabled={scale >= 3}
+            title="Aumentar zoom"
+            aria-label="Aumentar zoom"
+          >
+            <ZoomIn size={16} />
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => {
+              if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+                alert('Seu navegador não suporta leitura em voz alta.')
+                return
+              }
+              if (pdfTtsStatus === 'speaking') {
+                window.speechSynthesis.cancel()
+                setPdfTtsStatus('idle')
+                return
+              }
+              if (!pageText.trim()) {
+                alert('Aguarde o PDF terminar de carregar (extraindo texto da página).')
+                return
+              }
+              const utter = new SpeechSynthesisUtterance(pageText)
+              utter.lang = 'pt-BR'
+              utter.rate = 1.0
+              utter.onend = () => setPdfTtsStatus('idle')
+              utter.onerror = () => setPdfTtsStatus('idle')
+              window.speechSynthesis.speak(utter)
+              setPdfTtsStatus('speaking')
+            }}
+            disabled={!pageText.trim()}
+            title={pdfTtsStatus === 'speaking' ? 'Parar leitura da página' : 'Ler esta página em voz alta'}
+            aria-label={pdfTtsStatus === 'speaking' ? 'Parar leitura da página' : 'Ler esta página em voz alta'}
+            style={pdfTtsStatus === 'speaking' ? { color: '#d4af37' } : undefined}
+          >
+            {pdfTtsStatus === 'speaking' ? <Pause size={16} /> : <Play size={16} />}
+          </button>
+          <button
+            type="button"
+            className="icon-btn pdf-toolbar-resumir"
+            onClick={() => send(`Faça um resumo da página atual (página ${page}).`)}
+            disabled={thinking}
+            title="Manda a página atual pro Professor IA pedir um resumo"
+            aria-label="Resumir página atual com o Professor IA"
+          >
+            <Sparkles size={16} />
+            <span>Resumir página</span>
+          </button>
+        </div>
       </div>
 
       <div className="progress-bar-track" aria-hidden="true">
@@ -304,8 +410,72 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
         page={page}
         onPageChange={handlePageChange}
         onInternalNav={handleInternalNav}
-        scale={1.3}
+        scale={scale}
+        onTextExtracted={setPageText}
       />
+
+      {showOnboarding && (
+        <div
+          className="professor-onboarding"
+          style={{
+            marginTop: 16,
+            padding: '14px 16px',
+            borderRadius: 12,
+            background: 'linear-gradient(135deg, #2a2540, #3a3150)',
+            border: '1px solid #d4af37',
+            color: '#e8e0d0',
+          }}
+          role="region"
+          aria-label="Dicas do Professor IA"
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+            <strong style={{ color: '#d4af37', fontFamily: 'Georgia, serif' }}>
+              ✨ 3 coisas que você pode perguntar agora
+            </strong>
+            <button
+              type="button"
+              onClick={dismissOnboarding}
+              style={{
+                background: 'transparent',
+                border: '1px solid #6b6280',
+                color: '#e8e0d0',
+                padding: '4px 10px',
+                borderRadius: 6,
+                cursor: 'pointer',
+                fontSize: 13,
+              }}
+            >
+              Depois
+            </button>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ fontSize: 14, padding: '8px 14px' }}
+              onClick={() => send(`Resuma o capítulo que contém a página ${page}.`)}
+            >
+              📑 Resumir este capítulo
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ fontSize: 14, padding: '8px 14px' }}
+              onClick={() => send(`Crie 3 perguntas de reflexão sobre o que a página ${page} ensina.`)}
+            >
+              🪞 3 perguntas pra refletir
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ fontSize: 14, padding: '8px 14px' }}
+              onClick={() => send(`Quais são os termos difíceis desta página (${page}) e o que significam?`)}
+            >
+              🔤 Termos difíceis
+            </button>
+          </div>
+        </div>
+      )}
 
       <ProfessorChat
         book={book}
@@ -319,6 +489,7 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
         toggleListening={toggleListening}
         speech={speech}
         chatScrollRef={chatScrollRef}
+        page={page}
       />
     </section>
   )
@@ -343,9 +514,10 @@ interface ChatProps {
     debugInfo?: string
   }
   chatScrollRef: React.RefObject<HTMLDivElement | null>
+  page: number  // passada pra os chips rápidos preencherem o número da página
 }
 
-function ProfessorChat({ book, messages, input, setInput, send, thinking, listening, voiceSupported, toggleListening, speech, chatScrollRef }: ChatProps) {
+function ProfessorChat({ book, messages, input, setInput, send, thinking, listening, voiceSupported, toggleListening, speech, chatScrollRef, page }: ChatProps) {
   return (
     <div className="professor-panel" style={{ marginTop: 20 }}>
       <div className="professor-header">
@@ -415,6 +587,75 @@ function ProfessorChat({ book, messages, input, setInput, send, thinking, listen
         </button>
         <button type="button" className="btn btn-primary" disabled={thinking} onClick={() => send(input)}>
           <Send size={16} /> <span className="label">{thinking ? 'Pensando…' : 'Enviar'}</span>
+        </button>
+      </div>
+      {/* Chips rápidos SEMPRE visíveis — quick actions pro Professor IA. */}
+      <div className="quick-chips" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+        <button
+          type="button"
+          disabled={thinking}
+          onClick={() => send(`Faça um resumo curto desta página (página ${page}).`)}
+          title="Resumir a página que você está lendo"
+          style={{
+            padding: '8px 14px',
+            fontSize: 13,
+            fontWeight: 600,
+            borderRadius: 999,
+            background: 'linear-gradient(135deg, #2a2540, #3a3150)',
+            color: '#e8e0d0',
+            border: '1px solid #d4af37',
+            cursor: thinking ? 'not-allowed' : 'pointer',
+            opacity: thinking ? 0.5 : 1,
+            transition: 'transform 0.15s, box-shadow 0.15s',
+          }}
+          onMouseEnter={(e) => { if (!thinking) e.currentTarget.style.transform = 'translateY(-1px)' }}
+          onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)' }}
+        >
+          📄 Resumir esta página
+        </button>
+        <button
+          type="button"
+          disabled={thinking}
+          onClick={() => send(`Quais são os 3 conceitos mais importantes da página ${page}?`)}
+          title="Pega a essência da página atual"
+          style={{
+            padding: '8px 14px',
+            fontSize: 13,
+            fontWeight: 600,
+            borderRadius: 999,
+            background: 'linear-gradient(135deg, #2a2540, #3a3150)',
+            color: '#e8e0d0',
+            border: '1px solid #d4af37',
+            cursor: thinking ? 'not-allowed' : 'pointer',
+            opacity: thinking ? 0.5 : 1,
+            transition: 'transform 0.15s, box-shadow 0.15s',
+          }}
+          onMouseEnter={(e) => { if (!thinking) e.currentTarget.style.transform = 'translateY(-1px)' }}
+          onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)' }}
+        >
+          🧠 Conceitos-chave
+        </button>
+        <button
+          type="button"
+          disabled={thinking}
+          onClick={() => send(`Me dê um exemplo prático do que a página ${page} ensina.`)}
+          title="Traduz a teoria em caso real"
+          style={{
+            padding: '8px 14px',
+            fontSize: 13,
+            fontWeight: 600,
+            borderRadius: 999,
+            background: 'linear-gradient(135deg, #2a2540, #3a3150)',
+            color: '#e8e0d0',
+            border: '1px solid #d4af37',
+            cursor: thinking ? 'not-allowed' : 'pointer',
+            opacity: thinking ? 0.5 : 1,
+            transition: 'transform 0.15s, box-shadow 0.15s',
+          }}
+          onMouseEnter={(e) => { if (!thinking) e.currentTarget.style.transform = 'translateY(-1px)' }}
+          onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)' }}
+        >
+          💬 Exemplo prático
         </button>
       </div>
       {speech.debugInfo && (

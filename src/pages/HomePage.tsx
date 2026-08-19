@@ -4,7 +4,7 @@ import type { Route } from '../App'
 import type { LibraryState } from '../domain/library'
 import type { Book } from '../domain/types'
 import { BookCard } from '../components/BookCard'
-import { loadCatalogFromSupabase } from '../lib/catalogSupabase'
+import { loadCatalogFromSupabase, loadReaderCountsBySlug } from '../lib/catalogSupabase'
 import { ownsBook } from '../domain/library'
 
 interface Props {
@@ -15,16 +15,21 @@ interface Props {
 
 export function HomePage({ onNavigate, onBuy, library }: Props) {
   const [books, setBooks] = useState<Book[]>([])
+  const [readerCounts, setReaderCounts] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    loadCatalogFromSupabase().then((res) => {
+    Promise.all([
+      loadCatalogFromSupabase(),
+      loadReaderCountsBySlug(),
+    ]).then(([catalog, counts]) => {
       if (cancelled) return
-      setBooks(res.books)
-      setError(res.error)
+      setBooks(catalog.books)
+      setReaderCounts(counts)
+      setError(catalog.error)
       setLoading(false)
     })
     return () => { cancelled = true }
@@ -97,6 +102,7 @@ export function HomePage({ onNavigate, onBuy, library }: Props) {
               owned={ownsBook(library, 'demo-user', book.id)}
               onBuy={() => onBuy(book)}
               onRead={() => onNavigate('reader', book.id)}
+              readersCount={readerCounts[book.id]}
             />
           ))}
         </div>

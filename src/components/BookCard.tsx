@@ -9,13 +9,14 @@ interface Props {
   onBuy: () => void
   onRead: () => void
   showShare?: boolean  // default true; esconde no carrinho/checkout onde não faz sentido
+  readersCount?: number  // prova social: quantas pessoas estão lendo (0 = não mostra)
 }
 
 function formatPrice(cents: number) {
   return (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
 
-export function BookCard({ book, owned, onBuy, onRead, showShare = true }: Props) {
+export function BookCard({ book, owned, onBuy, onRead, showShare = true, readersCount }: Props) {
   // Tenta usar a capa real do Supabase se o slug existir lá.
   // Se não existir (placeholder catalog), usa a URL hardcoded do book.cover.
   const [liveCover, setLiveCover] = useState<string | null>(null)
@@ -53,6 +54,24 @@ export function BookCard({ book, owned, onBuy, onRead, showShare = true }: Props
           <div className="author">por {book.author}</div>
         </div>
         <p className="description">{book.description}</p>
+        {readersCount && readersCount > 0 ? (
+          <div
+            className="reader-count"
+            style={{
+              fontSize: 13,
+              color: 'var(--accent, #d4af37)',
+              fontWeight: 600,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              margin: '4px 0 0',
+            }}
+            aria-label={`${readersCount} pessoas estão lendo este livro`}
+          >
+            <span aria-hidden="true">👥</span>
+            <span>{readersCount} {readersCount === 1 ? 'pessoa lendo' : 'pessoas lendo'}</span>
+          </div>
+        ) : null}
         <div className="price">{formatPrice(book.price)}</div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           {owned ? (

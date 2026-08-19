@@ -78,3 +78,48 @@ export async function loadCatalogFromSupabase(): Promise<CatalogFetchResult> {
     return { books: [], error: err?.message || 'fetch_falhou' }
   }
 }
+
+/**
+ * Prova social: conta quantos leitores confirmados tem cada ebook (vitrine).
+ *
+ * Retorna Map<slug, count>. Se o Supabase bloquear via RLS, se a view
+ * `ebook_reader_counts` não existir, ou se der timeout, retorna Map vazio
+ * (graceful degradation — UI simplesmente não mostra "X lendo" e a home
+ * funciona igual).
+ *
+ * Depende da view `public.ebook_reader_counts` criada via Management API
+ * (Isaías autorizou 19/08/2026). View conta user_library com
+ * payment_status = 'confirmed' por ebook publicado, GRANT SELECT pra anon
+ * e authenticated — bypass da RLS restritiva de user_library.
+ *
+ * NÃO mexe em backend Python — bate direto no PostgREST com anon key.
+ */
+export async function loadReaderCountsBySlug(): Promise<Record<string, number>> {
+  const out: Record<string, number> = {}
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return out
+  try {
+    const url =
+      `${SUPABASE_URL}/rest/v1/ebook_reader_counts` +
+      `?select=slug,readers_count` +
+      `&limit=500`
+    const resp = await fetch(url, {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      },
+    })
+    if (!resp.ok) return out
+    const rows = await resp.json()
+    if (!Array.isArray(rows)) return out
+    for (const row of rows) {
+      const slug = row?.slug
+      const cnt = row?.readers_count
+      if (slug && typeof cnt === 'number' && cnt > 0) {
+        out[slug] = cnt
+      }
+    }
+    return out
+  } catch {
+    return out
+  }
+}

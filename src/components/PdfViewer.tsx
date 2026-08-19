@@ -11,9 +11,10 @@ interface Props {
   onPageChange: (page: number) => void
   onInternalNav?: (page: number) => void
   scale?: number
+  onTextExtracted?: (text: string) => void
 }
 
-export function PdfViewer({ pdfPath, page, onPageChange, onInternalNav, scale = 1.2 }: Props) {
+export function PdfViewer({ pdfPath, page, onPageChange, onInternalNav, scale = 1.2, onTextExtracted }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const docRef = useRef<PDFDocumentProxy | null>(null)
   const renderTaskRef = useRef<{ cancel: () => void } | null>(null)
@@ -41,6 +42,14 @@ export function PdfViewer({ pdfPath, page, onPageChange, onInternalNav, scale = 
     }
   }, [pdfPath])
 
+  // Guardamos o callback onInternalNav num ref pra que ele não seja
+  // dependência do useEffect de render (se ele mudar de referência a cada
+  // render do parent, o effect re-roda e o useEffect fica num loop).
+  const onInternalNavRef = useRef(onInternalNav)
+  useEffect(() => {
+    onInternalNavRef.current = onInternalNav
+  }, [onInternalNav])
+
   useEffect(() => {
     let cancelled = false
     async function render() {
@@ -57,7 +66,24 @@ export function PdfViewer({ pdfPath, page, onPageChange, onInternalNav, scale = 
       const task = pageObj.render({ canvas, canvasContext: context, viewport })
       renderTaskRef.current = task
       await task.promise
-      if (!cancelled && onInternalNav) onInternalNav(target)
+      if (cancelled) return
+      // Sinaliza navegação interna (page-by-page via scroll do PDF, futuro)
+      const navCb = onInternalNavRef.current
+      if (navCb) navCb(target)
+      // Extrai texto da página renderizada pra TTS (Kindle-style).
+      // Mantemos dentro do render() pra que `target` esteja no escopo.
+      if (onTextExtracted) {
+        try {
+          const textContent = await pageObj.getTextContent()
+          const text = textContent.items
+            .map((item: any) => ('str' in item ? item.str : ''))
+            .filter(Boolean)
+            .join(' ')
+          if (!cancelled) onTextExtracted(text)
+        } catch (e) {
+          console.warn('Falha ao extrair texto da página', e)
+        }
+      }
     }
     if (status === 'ready') {
       render().catch((err) => console.error('Render error', err))
@@ -65,7 +91,7 @@ export function PdfViewer({ pdfPath, page, onPageChange, onInternalNav, scale = 
     return () => {
       cancelled = true
     }
-  }, [page, scale, status, onInternalNav])
+  }, [page, scale, status, onTextExtracted])
 
   if (status === 'loading') {
     return <div className="pdf-canvas-wrap" style={{ color: 'white', textAlign: 'center', padding: 24 }}>Carregando PDF…</div>

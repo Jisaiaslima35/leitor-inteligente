@@ -253,19 +253,46 @@ input, textarea { font: inherit; color: inherit; }
 }
 .pdf-toolbar {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--line);
   background: var(--bg);
 }
+.pdf-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.pdf-toolbar-actions { gap: 6px; }
 .pdf-toolbar .page-label { font-weight: 600; font-size: 0.9rem; color: var(--ink-soft); }
 .pdf-toolbar input[type="number"] {
-  width: 70px;
+  width: 64px;
   padding: 6px 8px;
   border-radius: 8px;
   border: 1px solid var(--line);
   background: var(--bg-elev);
+  font-size: 16px; /* previne zoom iOS */
+  min-width: 0;
+}
+.zoom-label {
+  font-size: 13px;
+  opacity: 0.85;
+  min-width: 42px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.pdf-toolbar-resumir {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pdf-toolbar-resumir span {
+  font-size: 13px;
+  font-weight: 600;
 }
 .pdf-canvas-wrap { background: #2c2c2c; padding: 8px; max-height: 78vh; overflow: auto; display: flex; justify-content: center; }
 .pdf-canvas-wrap canvas { max-width: 100%; height: auto; box-shadow: 0 12px 30px rgba(0,0,0,0.35); }
@@ -281,6 +308,23 @@ input, textarea { font: inherit; color: inherit; }
 }
 .pdf-toolbar .page-progress-meta strong { color: var(--ink); font-size: 1rem; }
 .pdf-toolbar .page-progress-time { white-space: nowrap; }
+
+/* Mobile: tap targets mínimos de 44px e escalonamento melhor */
+@media (max-width: 720px) {
+  .pdf-toolbar { padding: 8px 10px; gap: 6px; }
+  .pdf-toolbar-row { gap: 6px; }
+  .pdf-toolbar-actions { gap: 4px; }
+  .pdf-toolbar .icon-btn {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 8px;
+  }
+  .pdf-toolbar .page-label { font-size: 0.85rem; }
+  .pdf-toolbar input[type="number"] { width: 56px; padding: 8px; }
+  .pdf-toolbar-resumir span { font-size: 12px; }
+  .pdf-toolbar .page-progress-time { display: none; } /* esconde tempo em mobile pra liberar espaço */
+  .quick-chips button { min-height: 44px; flex: 1 1 100%; }
+}
 
 /* Barra de progresso fina entre toolbar e PDF — Kindle */
 .progress-bar-track {

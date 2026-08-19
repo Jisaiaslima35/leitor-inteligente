@@ -413,7 +413,7 @@ def webhook(provider_name: str = 'cakto'):
             'paid_at': paid_at_iso,
             'expires_at': None,  # Não usado no modelo novo (era 365d)
             'consumed_at': None,  # Marcado por upload_book.py quando indexação termina
-            'amount_cents': amount or 200,  # R$2 TEMPORÁRIO p/ teste (volta 1000 depois)
+            'amount_cents': amount or 1000,  # R$10 — mínimo Asaas sandbox pra UNDEFINED é R$5
         }
         if traffic_source:
             upsert_body['traffic_source'] = traffic_source
@@ -450,7 +450,7 @@ def webhook(provider_name: str = 'cakto'):
             'ok': True,
             'kind': 'upload_payment',
             'user_id': user_id,
-            'amount_cents': amount or 200,  # R$2 TEMPORÁRIO p/ teste (volta 1000 depois)
+            'amount_cents': amount or 1000,  # R$10 — mínimo Asaas sandbox pra UNDEFINED é R$5
             'asaas_payment_id': order_id,
         })
 
@@ -695,7 +695,7 @@ pre {{ background: #f3f4f6; padding: 12px; border-radius: 8px; text-align: left;
 
 @app.route('/api/upload/create-checkout', methods=['POST'])
 def upload_create_checkout():
-    """Cria payment Asaas de R$15 (sandbox) pra liberar 1 acesso de upload (365 dias)."""
+    """Cria payment Asaas de R$10 pra liberar 1 acesso de upload (365 dias)."""
     data = request.get_json(silent=True) or {}
     user_id = data.get('user_id')
     user_email = data.get('user_email')
@@ -709,8 +709,8 @@ def upload_create_checkout():
     try:
         session = provider.create_checkout(
             product_id='upload',  # gatilho que o webhook detecta
-            product_name='Taxa de processamento de livro (Leitor Inteligente) - R$2',
-            amount_cents=200,  # R$2 TEMPORÁRIO p/ teste de Isaías (19/08/2026) — voltar pra 1000 (R$10) depois
+            product_name='Taxa de processamento de livro (Leitor Inteligente) - R$10',
+            amount_cents=1000,  # R$10 — mínimo do Asaas sandbox pra billingType=UNDEFINED é R$5
             customer_id=user_id,
             customer_email=user_email,
             success_url=success_url or 'https://preview.automacaojs.us/leitor-inteligente/#/upload',
@@ -731,7 +731,7 @@ def upload_create_checkout():
         # com timestamp real quando pagamento cai.
         'expires_at': None,
         'consumed_at': None,
-        'amount_cents': 200,  # R$2 TEMPORÁRIO p/ teste (volta 1000 depois)
+        'amount_cents': 1000,  # R$10 — bate com o amount_cents do Asaas payment acima
     }
     if traffic_source:
         upsert_body['traffic_source'] = traffic_source
@@ -761,7 +761,7 @@ def upload_create_checkout():
         'ok': True,
         'checkout_url': session.checkout_url,
         'external_id': session.external_id,
-        'amount_cents': 200,  # R$2 TEMPORÁRIO p/ teste (volta 1000 depois)
+        'amount_cents': 1000,  # R$10 — bate com o amount_cents do create-checkout
     })
 
 

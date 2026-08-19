@@ -128,7 +128,10 @@ class AsaasProvider(PaymentProvider):
             raise RuntimeError(f'Falha ao criar/buscar customer: {e}')
 
         # 2. Cria payment UNDEFINED (cliente escolhe método no checkout)
-        amount_brl = max(5.00, amount_cents / 100)
+        # Isaías autorizou 19/08/2026: tirar piso R$5 hardcoded, mandar valor real
+        # do ebook pro Asaas. Asaas PROD cobra R$1,99 fixo por Pix — prejuízo em
+        # ebooks < R$2 é por conta do seller, não vamos mascarar.
+        amount_brl = amount_cents / 100
         # externalReference CURTO: Asaas trunca silenciosamente em ~35 chars quando passa
         # de 100. Antes concatenávamos slug|uuid|email|metadata=... (>100 chars) e o Asaas
         # cortava em 35 — UUID vira "1cf5627b-696", email e metadata sumiam, webhook quebrava.

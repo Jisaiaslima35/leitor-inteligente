@@ -3,7 +3,7 @@ import { BookCard } from '../components/BookCard'
 import type { Book } from '../domain/types'
 import type { LibraryState } from '../domain/library'
 import { ownsBook } from '../domain/library'
-import { loadCatalogFromSupabase } from '../lib/catalogSupabase'
+import { loadCatalogFromSupabase, loadReaderCountsBySlug } from '../lib/catalogSupabase'
 
 interface Props {
   onBuy: (book: Book) => void
@@ -38,17 +38,23 @@ function readPending(): PendingCheckout | null {
 export function StorePage({ onBuy, library, onGoLibrary }: Props) {
   const [pending, setPending] = useState<PendingCheckout | null>(null)
   const [books, setBooks] = useState<Book[]>([])
+  const [readerCounts, setReaderCounts] = useState<Record<string, number>>({})
   const [loadingCatalog, setLoadingCatalog] = useState(true)
   const [catalogError, setCatalogError] = useState<string | null>(null)
 
   useEffect(() => {
-    // Carrega catálogo do Supabase (filtro server-side: admin + publicado + preço > 0)
+    // Carrega catálogo + prova social do Supabase (filtro server-side: admin + publicado + preço > 0).
     // SEM fallback pro CATALOG hardcoded — vitrine vazia é honesta.
+    // Contagens: se RLS bloquear, retorna {} e BookCard não mostra o badge.
     let cancelled = false
-    loadCatalogFromSupabase()
-      .then((res) => {
+    Promise.all([
+      loadCatalogFromSupabase(),
+      loadReaderCountsBySlug(),
+    ])
+      .then(([res, counts]) => {
         if (!cancelled) {
           setBooks(res.books)
+          setReaderCounts(counts)
           setCatalogError(res.error)
           setLoadingCatalog(false)
         }
@@ -173,6 +179,7 @@ export function StorePage({ onBuy, library, onGoLibrary }: Props) {
               owned={ownsBook(library, 'demo-user', book.id)}
               onBuy={() => onBuy(book)}
               onRead={() => undefined}
+              readersCount={readerCounts[book.id]}
             />
           ))
         )}

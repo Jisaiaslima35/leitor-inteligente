@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse as urllib_urlparse, parse_qs as urllib_parse_qs, quote as urllib_quote
 from datetime import datetime
 import threading
 import base64
@@ -1010,6 +1011,161 @@ class Handler(BaseHTTPRequestHandler):
                     'indexed': False,
                     'eta_seconds': eta_seconds,
                     'message': f'Livro "{title}" cadastrado. Indexando em background (~{eta_seconds//60} min).',
+                })
+            except Exception as e:
+                traceback.print_exc()
+                return self.send_json(500, {'error': str(e)[:500]})
+
+        self.send_json(404, {'error': 'not found'})
+
+    def do_PUT(self):
+        # PUT /api/admin/update-book — edita metadados do ebook (título, slug,
+        # autor, preço, is_published, shareable). Isaías msg 19/08: CRUD admin
+        # precisa de editar funcionando. NÃO mexe em PDF/capa (não é upload).
+        # self.path pode vir com query string — extrai só o path pra comparar
+        path_only = urllib_urlparse(self.path).path
+        if path_only == '/api/admin/update-book':
+            try:
+                admin_token = (
+                    self.headers.get('X-Admin-Token', '')
+                    or self.headers.get('Authorization', '').replace('Bearer ', '')
+                )
+                if admin_token != ADMIN_BYPASS_TOKEN:
+                    return self.send_json(403, {'error': 'Token de admin inválido'})
+
+                n = int(self.headers.get('Content-Length', '0'))
+                body = self.rfile.read(n) if n else b'{}'
+                data = json.loads(body) if body else {}
+                ebook_id = (data.get('ebook_id') or '').strip()
+                if not ebook_id:
+                    return self.send_json(400, {'error': 'ebook_id obrigatório'})
+
+                # Campos opcionais — só atualiza o que vier (PUT parcial)
+                allowed = {'title', 'slug', 'author', 'price_cents', 'is_published', 'shareable'}
+                update = {k: v for k, v in data.items() if k in allowed and v is not None}
+                if 'price_cents' in update:
+                    update['price_cents'] = max(0, int(update['price_cents']))
+                if 'slug' in update:
+                    update['slug'] = re.sub(r'[^a-z0-9-]+', '-', str(update['slug']).lower())[:60].strip('-')
+                update['updated_at'] = datetime.now().isoformat()
+
+                if not update or set(update.keys()) <= {'updated_at'}:
+                    return self.send_json(400, {'error': 'Nenhum campo editável enviado'})
+
+                req = Request(
+                    f'{SUPABASE_URL}/rest/v1/ebooks?id=eq.{ebook_id}',
+                    data=json.dumps(update).encode(),
+                    headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
+                             'Content-Type': 'application/json',
+                             'Prefer': 'return=representation'},
+                    method='PATCH',
+                )
+                with urlopen(req, timeout=15) as r:
+                    updated = json.loads(r.read())
+                if not updated:
+                    return self.send_json(404, {'error': 'ebook não encontrado'})
+                print(f'[admin-update] ebook {ebook_id} atualizado: {list(update.keys())}', flush=True)
+                return self.send_json(200, {'ok': True, 'ebook': updated[0]})
+            except Exception as e:
+                traceback.print_exc()
+                return self.send_json(500, {'error': str(e)[:500]})
+
+        self.send_json(404, {'error': 'not found'})
+
+    def do_DELETE(self):
+        # DELETE /api/admin/delete-book?ebook_id=<uuid> — apaga ebook e tudo
+        # relacionado (purchases, user_library, storage). Isaías msg 19/08: o
+        # botão de apagar no AdminPage não funcionava (RLS do Supabase bloqueia
+        # DELETE direto via anon key, mesmo o admin). Solução: backend com
+        # service_role key faz o cascade completo.
+        # self.path vem COM query string — extrai só o path pra comparar
+        path_only = urllib_urlparse(self.path).path
+        if path_only == '/api/admin/delete-book':
+            try:
+                admin_token = (
+                    self.headers.get('X-Admin-Token', '')
+                    or self.headers.get('Authorization', '').replace('Bearer ', '')
+                )
+                if admin_token != ADMIN_BYPASS_TOKEN:
+                    return self.send_json(403, {'error': 'Token de admin inválido'})
+
+                ebook_id = (
+                    self.headers.get('X-Ebook-Id', '').strip()
+                    or urllib_parse_qs(urllib_urlparse(self.path).query).get('ebook_id', [''])[0]
+                )
+                if not ebook_id:
+                    return self.send_json(400, {'error': 'ebook_id obrigatório (header X-Ebook-Id ou ?ebook_id=)'})
+
+                # 1. Busca o ebook (pra saber pdf_storage_path / cover_url pra limpar storage)
+                get_req = Request(
+                    f'{SUPABASE_URL}/rest/v1/ebooks?id=eq.{ebook_id}&select=id,slug,pdf_storage_path,cover_url',
+                    headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+                )
+                with urlopen(get_req, timeout=15) as r:
+                    rows = json.loads(r.read())
+                if not rows:
+                    return self.send_json(404, {'error': 'ebook não encontrado'})
+                ebook = rows[0]
+
+                # 2. Limpa tabelas relacionadas (ordem: dependentes primeiro)
+                for table in ('purchases', 'user_library'):
+                    del_req = Request(
+                        f'{SUPABASE_URL}/rest/v1/{table}?ebook_id=eq.{ebook_id}',
+                        headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+                        method='DELETE',
+                    )
+                    try:
+                        with urlopen(del_req, timeout=15):
+                            print(f'[admin-delete] {table} limpo pra ebook={ebook_id}', flush=True)
+                    except HTTPError as e:
+                        # 404 = tabela não tem nenhuma row, OK prosseguir
+                        if e.code != 404:
+                            print(f'[admin-delete] WARN limpando {table}: {e.code}', flush=True)
+
+                # 3. Storage best-effort (PDF no bucket 'ebooks' + capa no 'book-covers')
+                pdf_path = ebook.get('pdf_storage_path') or ''
+                if pdf_path:
+                    try:
+                        url_path = urllib_quote(pdf_path, safe='/')
+                        rm_req = Request(
+                            f'{SUPABASE_URL}/storage/v1/object/ebooks/{url_path}',
+                            headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+                            method='DELETE',
+                        )
+                        with urlopen(rm_req, timeout=15):
+                            print(f'[admin-delete] PDF removido: {pdf_path}', flush=True)
+                    except Exception as e:
+                        print(f'[admin-delete] WARN removendo PDF: {e}', flush=True)
+                cover = ebook.get('cover_url') or ''
+                # cover_url pode ser absoluto (https://.../book-covers/capa.jpg) — extrai path
+                if 'book-covers/' in cover:
+                    cover_path = cover.split('book-covers/', 1)[-1].split('?')[0]
+                    try:
+                        url_path = urllib_quote(cover_path, safe='/')
+                        rm_req = Request(
+                            f'{SUPABASE_URL}/storage/v1/object/book-covers/{url_path}',
+                            headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+                            method='DELETE',
+                        )
+                        with urlopen(rm_req, timeout=15):
+                            print(f'[admin-delete] capa removida: {cover_path}', flush=True)
+                    except Exception as e:
+                        print(f'[admin-delete] WARN removendo capa: {e}', flush=True)
+
+                # 4. Apaga o ebook em si
+                del_ebook_req = Request(
+                    f'{SUPABASE_URL}/rest/v1/ebooks?id=eq.{ebook_id}',
+                    headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+                    method='DELETE',
+                )
+                with urlopen(del_ebook_req, timeout=15):
+                    print(f'[admin-delete] ebook={ebook_id} (slug={ebook.get("slug")}) removido', flush=True)
+
+                return self.send_json(200, {
+                    'ok': True,
+                    'ebook_id': ebook_id,
+                    'slug': ebook.get('slug'),
+                    'message': f'Livro "{ebook.get("slug")}" removido do banco e do storage.',
                 })
             except Exception as e:
                 traceback.print_exc()
