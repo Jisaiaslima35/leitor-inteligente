@@ -4,6 +4,7 @@ import type { Book } from '../domain/types'
 import type { LibraryState } from '../domain/library'
 import { ownsBook } from '../domain/library'
 import { CATALOG } from '../domain/catalog'
+import { loadCatalogFromSupabase } from '../lib/catalogSupabase'
 
 interface Props {
   onBuy: (book: Book) => void
@@ -37,9 +38,29 @@ function readPending(): PendingCheckout | null {
 
 export function StorePage({ onBuy, library, onGoLibrary }: Props) {
   const [pending, setPending] = useState<PendingCheckout | null>(null)
+  const [books, setBooks] = useState<Book[]>(CATALOG)
+  const [loadingCatalog, setLoadingCatalog] = useState(true)
 
   useEffect(() => {
-    // Ao montar a Loja, vê se user voltou de um checkout
+    // 1. Carrega catálogo do Supabase (com fallback pro CATALOG estático se falhar)
+    let cancelled = false
+    loadCatalogFromSupabase()
+      .then((rows) => {
+        if (!cancelled) {
+          setBooks(rows.length > 0 ? rows : CATALOG)
+          setLoadingCatalog(false)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setLoadingCatalog(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    // 2. Ao montar a Loja, vê se user voltou de um checkout
     const p = readPending()
     if (p) setPending(p)
   }, [])
@@ -129,15 +150,21 @@ export function StorePage({ onBuy, library, onGoLibrary }: Props) {
       )}
 
       <div className="book-grid">
-        {CATALOG.map((book) => (
-          <BookCard
-            key={book.id}
-            book={book}
-            owned={ownsBook(library, 'demo-user', book.id)}
-            onBuy={() => onBuy(book)}
-            onRead={() => undefined}
-          />
-        ))}
+        {loadingCatalog && books.length === 0 ? (
+          <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted)' }}>
+            Carregando catálogo...
+          </div>
+        ) : (
+          books.map((book) => (
+            <BookCard
+              key={book.id}
+              book={book}
+              owned={ownsBook(library, 'demo-user', book.id)}
+              onBuy={() => onBuy(book)}
+              onRead={() => undefined}
+            />
+          ))
+        )}
       </div>
     </section>
   )
