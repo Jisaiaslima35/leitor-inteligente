@@ -5,6 +5,7 @@ import type { LibraryState, ProgressState } from '../domain/library'
 import { ownsBook } from '../domain/library'
 import { getProgress } from '../domain/progress'
 import { supabase, SUPABASE_READY } from '../lib/supabase'
+import { CampaignLinkButton } from '../components/CampaignLinkButton'
 
 interface Props {
   library: LibraryState
@@ -215,6 +216,7 @@ export function AdminPage({ library, progress, catalog, user, onReset }: Props) 
                   <th>Status</th>
                   <th>Progresso</th>
                   <th>Preço</th>
+                  <th>Campanha</th>
                 </tr>
               </thead>
               <tbody>
@@ -227,6 +229,7 @@ export function AdminPage({ library, progress, catalog, user, onReset }: Props) 
                       <td>{owned ? 'Comprado' : 'Disponível'}</td>
                       <td>{item ? `${item.percent}% (p. ${item.page}/${item.totalPages})` : '—'}</td>
                       <td>{formatPrice(book.price)}</td>
+                      <td><CampaignLinkButton ebookSlug={book.id} /></td>
                     </tr>
                   )
                 })}
