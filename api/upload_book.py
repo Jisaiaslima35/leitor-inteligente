@@ -4,7 +4,7 @@ Recebe PDF uploaded pelo usuário, processa (texto ou OCR), indexa no Supabase
 com isolamento total por user_id. Cada usuário só vê/processa seus próprios PDFs.
 Roda na porta 9134.
 """
-import json, os, re, subprocess, time, traceback
+import json, os, re, subprocess, time, traceback, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -45,6 +45,11 @@ APP_URL = SMTP_ENV.get('APP_URL', 'https://preview.automacaojs.us/leitor-intelig
 
 UPLOAD_TMP_PREFIX = 'tmp/'  # PDFs sendo processados ficam em {user_id}/tmp/...
 UPLOAD_FINAL_PREFIX = ''    # Quando processado, move pra {user_id}/{ebook_id}/
+
+# Admin user (Brisacamera34@gmail.com) — pode subir ebook sem checkout/payment.
+# UUID dele no Supabase Auth. Mesmo valor usado no frontend em src/lib/admin.ts.
+ADMIN_USER_ID = '4c347fb6-e66e-4993-b69e-93e966ef8455'
+ADMIN_BYPASS_TOKEN = os.environ.get('LEITOR_ADMIN_TOKEN', 'admin-bypass-leitor-2026')
 
 # Limites
 MAX_PDF_MB = 50
@@ -827,7 +832,248 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(500, {'error': str(e)[:500]})
             return
 
+        if self.path == '/api/admin/upload-book':
+            # Admin livre: upload SEM pagamento/checkout/upload_payments.
+            # Só pode ser chamado com o token de admin (mesmo do cofre).
+            try:
+                # 1. Valida token de admin (header X-Admin-Token OU campo admin_bypass)
+                admin_token = (
+                    self.headers.get('X-Admin-Token', '')
+                    or self.headers.get('Authorization', '').replace('Bearer ', '')
+                )
+                # Lê body multipart
+                n = int(self.headers.get('Content-Length', '0'))
+                body = self.rfile.read(n) if n else b''
+                # Parse simples de multipart (sem lib externa)
+                ctype = self.headers.get('Content-Type', '')
+                if 'multipart/form-data' not in ctype:
+                    return self.send_json(400, {'error': 'multipart/form-data esperado'})
+
+                boundary = ctype.split('boundary=', 1)[1].split(';')[0]
+                boundary_b = ('--' + boundary).encode()
+                parts = body.split(boundary_b)
+                fields = {}
+                file_bytes = None
+                filename = None
+                for part in parts[1:]:
+                    if part in (b'--\r\n', b'--', b''):
+                        continue
+                    if b'\r\n\r\n' not in part:
+                        continue
+                    head, _, content = part.partition(b'\r\n\r\n')
+                    head = head.decode('utf-8', errors='ignore')
+                    content = content.rstrip(b'\r\n')
+                    if 'Content-Disposition' not in head:
+                        continue
+                    # extrai name= e filename=
+                    name_match = re.search(r'name="([^"]+)"', head)
+                    if not name_match:
+                        continue
+                    field_name = name_match.group(1)
+                    fn_match = re.search(r'filename="([^"]+)"', head)
+                    if fn_match:
+                        filename = fn_match.group(1)
+                        file_bytes = content
+                    else:
+                        try:
+                            fields[field_name] = content.decode('utf-8').strip()
+                        except Exception:
+                            fields[field_name] = ''
+                if not file_bytes:
+                    return self.send_json(400, {'error': 'PDF não enviado'})
+                if filename != 'file' and 'pdf' not in (fields.get('file_type', '') or '').lower():
+                    # confere o filename pra upload
+                    pass
+
+                # 2. Valida token (segunda camada: compara com campo do form)
+                form_token = fields.get('admin_token', '')
+                if not admin_token or admin_token != ADMIN_BYPASS_TOKEN:
+                    if not form_token or form_token != ADMIN_BYPASS_TOKEN:
+                        return self.send_json(403, {'error': 'Token de admin inválido'})
+
+                title = fields.get('title', '').strip() or 'Livro Admin'
+                slug_raw = fields.get('slug', '').strip() or slugify(title)
+                slug = re.sub(r'[^a-z0-9-]+', '-', slug_raw.lower())[:60].strip('-') or 'admin-livro'
+                price_cents = int(fields.get('price_cents', '0') or 0)
+                is_published = fields.get('is_published', 'true').lower() in ('1', 'true', 'yes', 'on')
+                author = 'Admin Isaías'
+
+                # 3. Salva PDF num path admin-only (storage_path = admin/admin_livro_{ts}.pdf)
+                ts = int(time.time())
+                storage_path = f'admin/{slug}-{ts}/livro.pdf'
+                pdf_size = len(file_bytes)
+                if pdf_size > MAX_PDF_MB * 1024 * 1024:
+                    return self.send_json(413, {'error': f'PDF > {MAX_PDF_MB}MB'})
+
+                # Upload pro bucket 'ebooks' (privado)
+                upload_req = Request(
+                    f'{SUPABASE_URL}/storage/v1/object/ebooks/{storage_path}',
+                    data=file_bytes,
+                    headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
+                             'Content-Type': 'application/pdf', 'x-upsert': 'true',
+                             'Content-Length': str(pdf_size)},
+                    method='POST'
+                )
+                try:
+                    with urlopen(upload_req, timeout=120):
+                        print(f'[admin-upload] PDF salvo em {storage_path} ({pdf_size} bytes)', flush=True)
+                except HTTPError as e:
+                    body = e.read().decode('utf-8', errors='ignore')[:300]
+                    return self.send_json(500, {'error': f'Storage: HTTP {e.code}: {body}'})
+
+                # 4. INSERT ebook (com owner_user_id = ADMIN)
+                ebook_req = Request(
+                    f'{SUPABASE_URL}/rest/v1/ebooks',
+                    data=json.dumps({
+                        'slug': slug,
+                        'title': title,
+                        'author': author,
+                        'description': f'Cadastrado pelo admin em {datetime.now().isoformat()}',
+                        'pdf_storage_path': storage_path,
+                        'total_pages': 0,
+                        'price_cents': price_cents,
+                        'owner_user_id': ADMIN_USER_ID,
+                        'is_published': is_published,
+                    }).encode(),
+                    headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
+                             'Content-Type': 'application/json',
+                             'Prefer': 'return=representation'},
+                    method='POST'
+                )
+                with urlopen(ebook_req, timeout=15) as r:
+                    ebook_data = json.loads(r.read())
+                ebook_id = ebook_data[0]['id']
+                print(f'[admin-upload] ebook criado: id={ebook_id} slug={slug}', flush=True)
+
+                # 5. Insere em user_library do ADMIN (libera imediato, sem esperar index)
+                lib_req = Request(
+                    f'{SUPABASE_URL}/rest/v1/user_library',
+                    data=json.dumps({
+                        'user_id': ADMIN_USER_ID,
+                        'ebook_id': ebook_id,
+                        'payment_status': 'confirmed',
+                    }).encode(),
+                    headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
+                             'Content-Type': 'application/json',
+                             'Prefer': 'resolution=ignore-duplicates'},
+                    method='POST'
+                )
+                try:
+                    urlopen(lib_req, timeout=15)
+                    print(f'[admin-upload] user_library OK (admin)', flush=True)
+                except Exception as e:
+                    print(f'[admin-upload] WARN user_library: {e}', flush=True)
+
+                # 5b. Insere purchases AGORA (não espera thread daemon). Se o
+                # pipeline falhar, o admin já tem o registro contábil.
+                # purchases.id é UUID — não pode ser string livre como "admin-free-..."
+                purchase_id = str(uuid.uuid4())
+                purch_req = Request(
+                    f'{SUPABASE_URL}/rest/v1/purchases',
+                    data=json.dumps({
+                        'id': purchase_id,
+                        'user_id': ADMIN_USER_ID,
+                        'ebook_id': ebook_id,
+                        'amount_cents': 0,
+                        'currency': 'BRL',
+                        'payment_method': 'admin_bypass',
+                        'status': 'paid',
+                        'paid_at': datetime.now().isoformat(),
+                    }).encode(),
+                    headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
+                             'Content-Type': 'application/json',
+                             'Prefer': 'resolution=ignore-duplicates'},
+                    method='POST'
+                )
+                try:
+                    urlopen(purch_req, timeout=15)
+                    print(f'[admin-upload] purchase OK (admin-free={purchase_id})', flush=True)
+                except Exception as e:
+                    print(f'[admin-upload] WARN purchase: {e}', flush=True)
+
+                # 6. Dispara pipeline de indexação (RAG + capa) em background
+                threading.Thread(
+                    target=_admin_upload_pipeline,
+                    args=(ebook_id, storage_path, title, slug, author, 0, price_cents, is_published),
+                    daemon=True
+                ).start()
+                print(f'[admin-upload] thread pipeline disparada', flush=True)
+
+                eta_seconds = max(60, 100 * 3)  # 300s ETA aproximado
+                return self.send_json(200, {
+                    'ebook_id': ebook_id,
+                    'slug': slug,
+                    'title': title,
+                    'owner_user_id': ADMIN_USER_ID,
+                    'is_published': is_published,
+                    'price_cents': price_cents,
+                    'indexed': False,
+                    'eta_seconds': eta_seconds,
+                    'message': f'Livro "{title}" cadastrado. Indexando em background (~{eta_seconds//60} min).',
+                })
+            except Exception as e:
+                traceback.print_exc()
+                return self.send_json(500, {'error': str(e)[:500]})
+
         self.send_json(404, {'error': 'not found'})
+
+
+def _admin_upload_pipeline(ebook_id: str, storage_path: str, title: str, slug: str,
+                           author: str, total_pages: int, price_cents: int, is_published: bool):
+    """Pipeline admin (mesma lógica do upload_book.run_pipeline mas SEM pagamento).
+    owner_user_id = ADMIN_USER_ID fixo, insere em user_library e purchases direto."""
+    # Insere purchases AGORA (não espera pipeline terminar). Se run_pipeline falhar
+    # depois, o admin já tem o registro contábil.
+    # purchases.id é UUID — não pode ser string livre como "admin-free-..."
+    purchase_id = str(uuid.uuid4())
+    purch_req = Request(
+        f'{SUPABASE_URL}/rest/v1/purchases',
+        data=json.dumps({
+            'id': purchase_id,
+            'user_id': ADMIN_USER_ID,
+            'ebook_id': ebook_id,
+            'amount_cents': 0,
+            'currency': 'BRL',
+            'payment_method': 'admin_bypass',
+            'status': 'paid',
+            'paid_at': datetime.now().isoformat(),
+        }).encode(),
+        headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
+                 'Content-Type': 'application/json',
+                 'Prefer': 'resolution=ignore-duplicates,return=representation'},
+        method='POST'
+    )
+    try:
+        urlopen(purch_req, timeout=15)
+        print(f'[admin-upload] purchase registrado (admin-free): {purchase_id}', flush=True)
+    except HTTPError as e:
+        body = e.read().decode('utf-8', errors='ignore')[:300]
+        print(f'[admin-upload] WARN purchase HTTP {e.code}: {body}', flush=True)
+    except Exception as e:
+        print(f'[admin-upload] WARN purchase: {e}', flush=True)
+
+    # Reaproveita o pipeline existente — só pra capa + RAG + mover PDF.
+    # Não chama mark-consumed (sem pagamento pra fechar).
+    run_pipeline(ADMIN_USER_ID, ebook_id, storage_path, title, author, total_pages)
+    # Garante is_published e price_cents no ebook (pipeline pode não ter mexido)
+    upd_req = Request(
+        f'{SUPABASE_URL}/rest/v1/ebooks?id=eq.{ebook_id}',
+        data=json.dumps({
+            'price_cents': price_cents,
+            'is_published': is_published,
+            'owner_user_id': ADMIN_USER_ID,
+            'slug': slug,
+            'updated_at': datetime.now().isoformat(),
+        }).encode(),
+        headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
+                 'Content-Type': 'application/json'},
+        method='PATCH'
+    )
+    try:
+        urlopen(upd_req, timeout=15)
+        print(f'[admin-upload] ebook atualizado: price={price_cents} published={is_published}', flush=True)
+    except Exception as e:
+        print(f'[admin-upload] WARN update final: {e}', flush=True)
 
 
 if __name__ == '__main__':
