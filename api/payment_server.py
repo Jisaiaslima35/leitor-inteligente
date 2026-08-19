@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import sys
 import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Adiciona o path do projeto
@@ -118,7 +119,10 @@ def _release_ebook(*, user_id: str, ebook_id: str, amount_cents: int,
                 # Já existe — atualiza pra paid (PATCH) e libera na biblioteca
                 _supabase_patch(
                     f'purchases?id=eq.{purchases[0]["id"]}',
-                    {'status': 'paid'}
+                    {
+                        'status': 'paid',
+                        'paid_at': datetime.now(timezone.utc).isoformat(),
+                    }
                 )
                 # Garante que tá na user_library
                 status2, body2 = _supabase_post(
@@ -143,6 +147,7 @@ def _release_ebook(*, user_id: str, ebook_id: str, amount_cents: int,
         'payment_method': payment_method,
         'payment_id': payment_id,
         'status': 'paid',
+        'paid_at': datetime.now(timezone.utc).isoformat(),
     })
     if status not in (200, 201):
         return {'ok': False, 'error': f'purchase insert failed: {status} {body}'}
@@ -348,18 +353,20 @@ def webhook(provider_name: str = 'cakto'):
 
     # === NOVO: detecção de pagamento de upload_fee ===
     # externalReference no Asaas vem como "upload|customer_id|email" quando é upload.
-    # ebook_slug == 'upload' é o gatilho. Cria row em upload_payments e libera acesso
-    # ao pipeline de upload por 365 dias (1 ano).
+    # ebook_slug == 'upload' é o gatilho. Cria row em upload_payments com consumed_at=NULL.
+    # Acesso controlado por 1 uso: upload_book.py marca consumed_at=now() quando livro
+    # termina de indexar. Próximo upload exige novo pagamento (R$10).
     if ebook_slug == 'upload':
-        from datetime import datetime, timedelta, timezone
-        expires_at = (datetime.now(timezone.utc) + timedelta(days=365)).isoformat()
+        from datetime import datetime, timezone
+        paid_at_iso = datetime.now(timezone.utc).isoformat()
         # Idempotente: usa upsert via asaas_payment_id UNIQUE
         upsert_body = {
             'user_id': customer_id,
             'asaas_payment_id': order_id,
-            'paid_at': datetime.now(timezone.utc).isoformat(),
-            'expires_at': expires_at,
-            'amount_cents': amount or 1500,
+            'paid_at': paid_at_iso,
+            'expires_at': None,  # Não usado no modelo novo (era 365d)
+            'consumed_at': None,  # Marcado por upload_book.py quando indexação termina
+            'amount_cents': amount or 1000,  # R$10 (modelo novo: por livro)
         }
         upsert_headers = {
             'apikey': SUPABASE_SR,
@@ -394,7 +401,8 @@ def webhook(provider_name: str = 'cakto'):
             'ok': True,
             'kind': 'upload_payment',
             'user_id': customer_id,
-            'expires_at': expires_at,
+            'amount_cents': amount or 1000,
+            'asaas_payment_id': order_id,
         })
 
     # Resolve ebook_id a partir do slug (fluxo normal de compra de ebook)
@@ -644,8 +652,8 @@ def upload_create_checkout():
     try:
         session = provider.create_checkout(
             product_id='upload',  # gatilho que o webhook detecta
-            product_name='Taxa de processamento de livro (Leitor Inteligente)',
-            amount_cents=1500,
+            product_name='Taxa de processamento de livro (Leitor Inteligente) - R$10',
+            amount_cents=1000,  # R$10 por livro (modelo 1 pagamento = 1 upload)
             customer_id=user_id,
             customer_email=user_email,
             success_url=success_url or 'https://preview.automacaojs.us/leitor-inteligente/#/upload',
@@ -658,7 +666,7 @@ def upload_create_checkout():
         'ok': True,
         'checkout_url': session.checkout_url,
         'external_id': session.external_id,
-        'amount_cents': 1500,
+        'amount_cents': 1000,
     })
 
 
@@ -689,29 +697,84 @@ def upload_access():
         return jsonify({'ok': True, 'has_access': False, 'reason': 'no_payment'})
 
     row = rows[0]
-    # Compara expires_at com agora
-    from datetime import datetime, timezone
-    try:
-        expires_at = datetime.fromisoformat(row['expires_at'].replace('Z', '+00:00'))
-    except Exception:
-        return jsonify({'ok': False, 'error': f'expires_at inválido: {row.get("expires_at")}'}), 500
-    now = datetime.now(timezone.utc)
-    if expires_at <= now:
+    # Modelo novo: 1 pagamento por livro. Acesso = consumed_at IS NULL.
+    # Quando upload_book.py termina a indexação, chama /api/upload/mark-consumed
+    # e fecha o canal. Próximo upload exige novo pagamento.
+    consumed_at = row.get('consumed_at')
+    if consumed_at:
         return jsonify({
             'ok': True,
             'has_access': False,
-            'reason': 'expired',
-            'expires_at': row['expires_at'],
+            'reason': 'already_consumed',
+            'consumed_at': consumed_at,
             'paid_at': row.get('paid_at'),
+            'amount_cents': row.get('amount_cents'),
         })
 
     return jsonify({
         'ok': True,
         'has_access': True,
-        'expires_at': row['expires_at'],
+        'consumed_at': None,
         'paid_at': row.get('paid_at'),
         'amount_cents': row.get('amount_cents'),
     })
+
+
+@app.route('/api/upload/mark-consumed', methods=['POST'])
+def upload_mark_consumed():
+    """Marca upload_payments.consumed_at=now() quando livro terminou de indexar.
+
+    Chamado por upload_book.py ao fim do upload_job (todas páginas processadas).
+    Idempotente: se já consumido, retorna 200 sem mudar nada.
+
+    Body JSON: { asaas_payment_id?: <id>, ebook_id?: <uuid>, user_id?: <uuid> }
+    user_id é o do UPLOADER (não do ebook). Se vier, evita ambiguidade quando
+    ebook_id é compartilhado entre múltiplos users.
+    """
+    data = request.get_json(silent=True) or {}
+    asaas_payment_id = data.get('asaas_payment_id')
+    ebook_id = data.get('ebook_id')
+    user_id_override = data.get('user_id')
+
+    if not (asaas_payment_id or ebook_id):
+        return jsonify({'ok': False, 'error': 'asaas_payment_id ou ebook_id obrigatório'}), 400
+
+    from datetime import datetime, timezone
+    consumed_iso = datetime.now(timezone.utc).isoformat()
+
+    if asaas_payment_id:
+        # Caminho direto: marca 1 row específica
+        path = f'upload_payments?asaas_payment_id=eq.{asaas_payment_id}'
+        patch_body = {'consumed_at': consumed_iso}
+        if ebook_id:
+            patch_body['ebook_id'] = ebook_id
+    elif ebook_id:
+        # Tem ebook_id → acha o user_id correto
+        if user_id_override:
+            user_id = user_id_override
+        else:
+            sl_status, sl_body = _supabase_get(
+                f'user_library?ebook_id=eq.{ebook_id}&select=user_id&limit=1'
+            )
+            try:
+                user_libs = json.loads(sl_body) if sl_body.strip() else []
+                if not user_libs:
+                    return jsonify({'ok': False, 'error': 'user_library não encontrada'}), 404
+                user_id = user_libs[0]['user_id']
+            except Exception as e:
+                return jsonify({'ok': False, 'error': f'parse user_library: {e}'}), 500
+
+        # Pega o 1º upload_payments NÃO CONSUMIDO do user (ordem por paid_at ASC)
+        # ASC pra que o pagamento MAIS ANTIGO seja consumido primeiro (FIFO).
+        path = f'upload_payments?user_id=eq.{user_id}&consumed_at=is.null&order=paid_at.asc&limit=1'
+        patch_body = {'consumed_at': consumed_iso, 'ebook_id': ebook_id}
+
+    status, body = _supabase_patch(path, patch_body)
+
+    if status not in (200, 201, 204):
+        return jsonify({'ok': False, 'error': f'PATCH falhou: {status} {body[:200]}'}), 500
+
+    return jsonify({'ok': True, 'consumed_at': consumed_iso, 'user_id': user_id if ebook_id and not asaas_payment_id else None})
 
 
 if __name__ == '__main__':
