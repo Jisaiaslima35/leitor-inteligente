@@ -3,20 +3,20 @@
  *
  * Fluxo:
  * 1. Extrai ebook_id e ?src= da URL
- * 2. Se logado: vai direto pro checkout Asaas (via form submit)
- * 3. Se NÃO logado: salva em sessionStorage e mostra tela de login
- *    O listener global onAuthStateChange no App.tsx detecta o login
- *    e redireciona pra cá de volta, independente de qual tela
- *    o OAuth deixou o usuário.
+ * 2. Se NÃO logado: mostra botão "Entrar com Google". Após o login, o
+ *    listener onAuthStateChange no App.tsx detecta SIGNED_IN, lê
+ *    sessionStorage, e navega o user de volta pra cá.
+ * 3. Se logado: monta a URL do checkout Asaas e mostra um botão
+ *    grande "Pagar agora R$ X". O user clica → navegação cross-origin
+ *    com user gesture → Asaas sandbox.
+ *
+ * Por que SEM auto-redirect? Extensões de browser (PWA installer, ad
+ * blocker, gerenciador de senhas) interceptam window.location.assign
+ * em navegações cross-origin SEM user gesture. A solução é usar o
+ * mesmo padrão que funciona no StorePage: anchor <a> clicado pelo user.
  *
  * Esse é o endpoint de divulgação: o link é compartilhável por
  * Instagram/YouTube/WhatsApp/etc — uma URL só, todo mundo cai no checkout.
- *
- * IMPORTANTE: usamos form submit (POST) com `target=_top` em vez de
- * `window.location.assign` porque algumas extensões de browser (PWA
- * installers, ad blockers) interceptam atribuições programáticas de
- * location.href/assign, mas NÃO interceptam submissão de form. O form
- * submit é a forma mais garantida de fazer navegação cross-origin.
  */
 import { useEffect, useState } from 'react'
 import { useAuth } from '../lib/AuthContext'
@@ -77,9 +77,9 @@ function buildCheckoutUrl(book: Book, email: string, uid: string, trafficSource:
 export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Props) {
   const { isAuthenticated, isReady } = useAuth()
   const [book, setBook] = useState<Book | null | undefined>(undefined)
+  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [attempted, setAttempted] = useState(false)
-  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null)  // quando setado, mostra botão "Ir pro checkout"
+  const [building, setBuilding] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -95,6 +95,8 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
     return () => { cancelled = true }
   }, [ebookId])
 
+  // Persiste o destino enquanto deslogado, pra ser recuperado pelo
+  // listener onAuthStateChange no App.tsx quando o user logar.
   useEffect(() => {
     if (isReady && !isAuthenticated) {
       try {
@@ -106,48 +108,58 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
     }
   }, [isReady, isAuthenticated, ebookId, trafficSource])
 
+  // Quando loga (independente do listener), limpa a flag residual.
   useEffect(() => {
     if (isAuthenticated) {
       try { sessionStorage.removeItem(STORAGE_KEY) } catch {}
     }
   }, [isAuthenticated])
 
-  // Tenta auto-redirecionar quando logado + book pronto. Se após 1.5s
-  // ainda estiver na tela (ou seja, alguma extensão bloqueou o assign),
-  // expõe o link clicável como fallback.
+  // Quando o user está logado e o book tá resolvido, monta a URL do
+  // checkout. NÃO chama location.assign — apenas prepara a URL pro
+  // user clicar no botão. Garante que a navegação é um user gesture.
   useEffect(() => {
-    if (!isReady || !isAuthenticated || !book || attempted) return
-    setAttempted(true)
-
+    if (!isReady || !isAuthenticated || !book || checkoutUrl) return
     let cancelled = false
-    let fallbackTimer: ReturnType<typeof setTimeout> | null = null
-
-    startCheckout(book, trafficSource)
-      .then((url) => {
-        if (cancelled || !url) return
-        // Tenta auto-navegar. Se o browser bloquear, o fallbackTimer abaixo
-        // expõe o botão manual.
-        fallbackTimer = setTimeout(() => {
-          if (!cancelled) setCheckoutUrl(url)  // expõe botão de fallback
-        }, 1500)
-      })
-      .catch((e) => {
-        if (cancelled) return
-        setError(e?.message ?? 'Falha ao iniciar checkout')
-        setAttempted(false)
-      })
-
-    return () => {
-      cancelled = true
-      if (fallbackTimer) clearTimeout(fallbackTimer)
-    }
-  }, [isReady, isAuthenticated, book, attempted, trafficSource])
-
-  const showAuthTransition = isAuthenticated && book !== null
+    setBuilding(true)
+    setError(null)
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return
+      const sess = data.session
+      if (!sess?.user?.id || !sess.user.email) {
+        // Sessão inválida → volta pro login
+        window.location.hash = `#/login?next=/comprar/${encodeURIComponent(book.id)}${
+          trafficSource ? `&src=${encodeURIComponent(trafficSource)}` : ''
+        }`
+        return
+      }
+      const url = buildCheckoutUrl(book, sess.user.email, sess.user.id, trafficSource)
+      setCheckoutUrl(url)
+      // Marca visual "vai pagar" pro banner da Loja saber
+      try {
+        localStorage.setItem(
+          'leitor-ia:pending-checkout',
+          JSON.stringify({ bookId: book.id, bookTitle: book.title, at: Date.now() }),
+        )
+      } catch {}
+      setBuilding(false)
+    }).catch((e) => {
+      if (cancelled) return
+      setError(e?.message ?? 'Falha ao montar checkout')
+      setBuilding(false)
+    })
+    return () => { cancelled = true }
+  }, [isReady, isAuthenticated, book, checkoutUrl, trafficSource])
 
   if (book === undefined) {
-    return <div className="buy-loading"><p>Carregando livro...</p></div>
+    return (
+      <section className="buy-loading">
+        <div className="spinner" />
+        <p>Carregando livro...</p>
+      </section>
+    )
   }
+
   if (book === null) {
     return (
       <section className="buy-error">
@@ -159,47 +171,7 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
       </section>
     )
   }
-  if (showAuthTransition) {
-    return (
-      <section className="buy-checkout-transition">
-        <div className="spinner" aria-label="Carregando" />
-        <h2>Preparando seu checkout...</h2>
-        <p style={{ color: 'var(--muted)' }}>
-          Você será redirecionado pro pagamento de <strong>{book.title}</strong> (R$ {(book.price / 100).toFixed(2)}).
-        </p>
-        {error ? (
-          <>
-            <p style={{ color: 'salmon' }}>{error}</p>
-            <button
-              className="btn btn-primary"
-              onClick={() => { setAttempted(false); setError(null); setCheckoutUrl(null) }}
-            >
-              Tentar de novo
-            </button>
-          </>
-        ) : checkoutUrl ? (
-          <>
-            <p style={{ color: 'salmon', fontSize: 13 }}>
-              O navegador não navegou automaticamente. Toque no botão abaixo pra abrir o checkout:
-            </p>
-            <a
-              href={checkoutUrl}
-              className="btn btn-primary"
-              target="_top"
-              rel="noopener"
-              style={{ display: 'inline-block', marginTop: 8, textDecoration: 'none' }}
-            >
-              Ir pro checkout →
-            </a>
-          </>
-        ) : (
-          <p style={{ fontSize: 12, color: 'var(--muted)' }}>
-            Aguardando redirecionamento...
-          </p>
-        )}
-      </section>
-    )
-  }
+
   if (!isAuthenticated) {
     return (
       <section className="buy-redirect">
@@ -228,42 +200,72 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
     )
   }
 
-  return null
-}
-
-/**
- * Tenta iniciar o checkout.
- * Retorna a URL construída (pro fallback manual) ou null se sessão inválida.
- *
- * Estratégia em camadas:
- * 1. location.assign (navegação direta) — funciona em 95% dos casos
- * 2. Se após 1.5s a tela ainda tá visível, o BuyPage expõe o link
- *    clicável <a target="_top"> com a MESMA URL — funciona em qualquer
- *    browser, mesmo com extensões bloqueando location.assign
- */
-async function startCheckout(book: Book, trafficSource: string | null): Promise<string | null> {
-  const { data: sessData } = await supabase.auth.getSession()
-  const sess = sessData?.session
-  if (!sess?.user?.id || !sess.user.email) {
-    window.location.hash = `#/login?next=/comprar/${encodeURIComponent(book.id)}${
-      trafficSource ? `&src=${encodeURIComponent(trafficSource)}` : ''
-    }`
-    return null
-  }
-  const url = buildCheckoutUrl(book, sess.user.email, sess.user.id, trafficSource)
-
-  // Marca visual "estou indo pagar" — banner da StorePage usa isso
-  try {
-    localStorage.setItem(
-      'leitor-ia:pending-checkout',
-      JSON.stringify({ bookId: book.id, bookTitle: book.title, at: Date.now() }),
-    )
-  } catch {}
-
-  // Tenta auto-navegar. Se a aba já tiver sumido (sucesso), a próxima
-  // linha nem executa. Se não navegar, o BuyPage mostra o fallback
-  // clicável depois de 1.5s.
-  window.location.assign(url)
-
-  return url
+  // Logado + book pronto: mostra botão grande de "Pagar agora".
+  // O click é um user gesture, então a navegação cross-origin funciona
+  // em qualquer browser/extensão.
+  return (
+    <section className="buy-checkout">
+      <div className="buy-checkout-card">
+        <h2>Quase lá!</h2>
+        <p style={{ color: 'var(--muted)', marginTop: 4 }}>
+          Você vai comprar <strong>{book.title}</strong> por{' '}
+          <strong style={{ color: 'var(--primary)' }}>
+            R$ {(book.price / 100).toFixed(2)}
+          </strong>.
+        </p>
+        {error && <p style={{ color: 'salmon', marginTop: 12 }}>{error}</p>}
+        <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {checkoutUrl ? (
+            <a
+              href={checkoutUrl}
+              className="btn btn-primary"
+              target="_top"
+              rel="noopener"
+              onClick={() => {
+                // Marca que o user clicou — ajuda no debug e força o
+                // browser a tratar como navegação iniciada pelo user.
+                try {
+                  localStorage.setItem(
+                    'leitor-ia:pending-checkout',
+                    JSON.stringify({ bookId: book.id, bookTitle: book.title, at: Date.now() }),
+                  )
+                } catch {}
+              }}
+              style={{
+                display: 'inline-block',
+                textAlign: 'center',
+                padding: '14px 24px',
+                fontSize: 16,
+                fontWeight: 600,
+                textDecoration: 'none',
+              }}
+            >
+              💳 Pagar agora R$ {(book.price / 100).toFixed(2)}
+            </a>
+          ) : building ? (
+            <button className="btn btn-primary" disabled>
+              <span className="spinner" style={{ marginRight: 8 }} />
+              Preparando...
+            </button>
+          ) : (
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                // Retry: força o efeito a montar de novo resetando checkoutUrl
+                setCheckoutUrl(null)
+              }}
+            >
+              Tentar de novo
+            </button>
+          )}
+          <button className="btn btn-ghost" onClick={onGoLibrary}>
+            Ver minha biblioteca
+          </button>
+        </div>
+        <small style={{ display: 'block', marginTop: 16, color: 'var(--muted)', fontSize: 12 }}>
+          Após o pagamento, o livro entra automaticamente na sua biblioteca.
+        </small>
+      </div>
+    </section>
+  )
 }
