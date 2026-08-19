@@ -37,13 +37,22 @@ function findBookInCatalog(ebookId: string): Book | undefined {
   return CATALOG.find((b) => b.id === ebookId)
 }
 
+// UUID válido (8-4-4-4-12). Se ebookId não casar, tratamos como slug.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 async function loadBookFromSupabase(ebookId: string): Promise<Book | null> {
   try {
-    const { data, error } = await supabase
+    // Detecta se é UUID ou slug. Antes usava .or(`id.eq.X,slug.eq.X`) que
+    // quebrava com 22P02 — PostgREST infere o tipo da disjunção inteira como
+    // UUID (porque a coluna id é UUID) e tenta converter "teste-r5" pra UUID.
+    // Caminho de campanha (/comprar/{slug}) → busca por slug. Link interno
+    // com uuid → busca por id. Sem .or() = sem ambiguidade de tipo.
+    const isUuid = UUID_RE.test(ebookId)
+    let query = supabase
       .from('ebooks')
       .select('id, title, author, cover_url, price_cents, slug, shareable')
-      .or(`id.eq.${ebookId},slug.eq.${ebookId}`)
-      .maybeSingle()
+    query = isUuid ? query.eq('id', ebookId) : query.eq('slug', ebookId)
+    const { data, error } = await query.maybeSingle()
     if (error || !data) return null
     if (data.shareable === false) return null
     return {
