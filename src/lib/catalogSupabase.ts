@@ -1,17 +1,24 @@
-// Carrega catálogo dinâmico do Supabase com fallback seguro pro CATALOG hardcoded.
-// Strategy: Supabase é source-of-truth pra preço/capa/descrição, CATALOG local
-// provê highlights + chunks (que ainda não migramos pro Supabase).
+// Carrega catálogo dinâmico do Supabase.
+// FONTE OFICIAL: Supabase. NÃO usa mais CATALOG hardcoded como fallback.
+//
+// Filtro de vitrine (Início + Loja):
+//   - owner_user_id = ADMIN_USER_ID (só ebooks cadastrados pelo admin)
+//   - is_published = true (admin precisa publicar)
+//   - price_cents > 0 (ebooks grátis NÃO aparecem — evita quebrar a app)
+//
+// Chunks de RAG (para o chat do Leitor) ficam em src/domain/catalogRagChunks.ts
+// — o admin pode publicar livros sem precisar re-indexar RAG.
 
-import { CATALOG } from '../domain/catalog'
+import { ADMIN_USER_ID } from './admin'
 import type { Book } from '../domain/types'
 
-// Lê env vars expostas pelo Vite (VITE_*) — não usa segredos, só URL + anon key.
 const SUPABASE_URL =
   (import.meta as any).env?.VITE_SUPABASE_URL || ''
 const SUPABASE_ANON_KEY =
   (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || ''
 
 export interface SupabaseEbook {
+  id: string
   slug: string
   title: string
   author: string | null
@@ -20,49 +27,54 @@ export interface SupabaseEbook {
   price_cents: number
   total_pages: number
   is_published: boolean
+  owner_user_id: string | null
 }
 
-export async function loadCatalogFromSupabase(): Promise<Book[]> {
+export interface CatalogFetchResult {
+  books: Book[]
+  error: string | null
+}
+
+/**
+ * Carrega ebooks visíveis publicamente (vitrine: Início + Loja).
+ * Filtro acontece no Supabase via query — NADA de filtro visual no React.
+ * Se Supabase falhar OU retornar vazio, retorna lista vazia (sem fallback
+ * hardcoded). App mostra estado vazio honesto em vez de vazar ebooks privados.
+ */
+export async function loadCatalogFromSupabase(): Promise<CatalogFetchResult> {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    console.warn('[catalog] env vars ausentes, usando CATALOG estático')
-    return CATALOG
+    return { books: [], error: 'supabase_env_ausente' }
   }
   try {
     const url =
       `${SUPABASE_URL}/rest/v1/ebooks?is_published=eq.true` +
-      `&select=slug,title,author,description,cover_url,price_cents,total_pages` +
-      `&order=price_cents.desc,created_at.desc&limit=200`
+      `&owner_user_id=eq.${ADMIN_USER_ID}` +
+      `&price_cents=gt.0` +
+      `&select=id,slug,title,author,description,cover_url,price_cents,total_pages` +
+      `&order=created_at.desc&limit=200`
     const resp = await fetch(url, {
       headers: {
         apikey: SUPABASE_ANON_KEY,
         Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
       },
     })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    const rows: SupabaseEbook[] = await resp.json()
-    if (!Array.isArray(rows) || rows.length === 0) {
-      console.warn('[catalog] Supabase retornou vazio, usando CATALOG estático')
-      return CATALOG
+    if (!resp.ok) {
+      return { books: [], error: `http_${resp.status}` }
     }
-    // Merge: Supabase é source-of-truth pra metadados comerciais;
-    // CATALOG local provê highlights + chunks (lookup por slug).
-    const bySlug = new Map(CATALOG.map((b) => [b.id, b]))
-    return rows.map((row): Book => {
-      const local = bySlug.get(row.slug)
-      return {
-        id: row.slug,
-        title: row.title,
-        author: row.author || '',
-        cover: row.cover_url || local?.cover || '',
-        description: row.description || '',
-        price: row.price_cents,
-        totalPages: row.total_pages,
-        highlights: local?.highlights || [],
-        chunks: local?.chunks || [],
-      }
-    })
-  } catch (err) {
-    console.error('[catalog] falha no fetch Supabase, fallback CATALOG:', err)
-    return CATALOG
+    const rows: SupabaseEbook[] = await resp.json()
+    const books: Book[] = (rows || []).map((row) => ({
+      id: row.slug,
+      title: row.title,
+      author: row.author || '',
+      cover: row.cover_url || '',
+      description: row.description || '',
+      price: row.price_cents,
+      totalPages: row.total_pages,
+      highlights: [],
+      chunks: [],
+    }))
+    return { books, error: null }
+  } catch (err: any) {
+    return { books: [], error: err?.message || 'fetch_falhou' }
   }
 }

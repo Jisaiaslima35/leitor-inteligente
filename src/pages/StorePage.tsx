@@ -3,7 +3,6 @@ import { BookCard } from '../components/BookCard'
 import type { Book } from '../domain/types'
 import type { LibraryState } from '../domain/library'
 import { ownsBook } from '../domain/library'
-import { CATALOG } from '../domain/catalog'
 import { loadCatalogFromSupabase } from '../lib/catalogSupabase'
 
 interface Props {
@@ -38,21 +37,27 @@ function readPending(): PendingCheckout | null {
 
 export function StorePage({ onBuy, library, onGoLibrary }: Props) {
   const [pending, setPending] = useState<PendingCheckout | null>(null)
-  const [books, setBooks] = useState<Book[]>(CATALOG)
+  const [books, setBooks] = useState<Book[]>([])
   const [loadingCatalog, setLoadingCatalog] = useState(true)
+  const [catalogError, setCatalogError] = useState<string | null>(null)
 
   useEffect(() => {
-    // 1. Carrega catálogo do Supabase (com fallback pro CATALOG estático se falhar)
+    // Carrega catálogo do Supabase (filtro server-side: admin + publicado + preço > 0)
+    // SEM fallback pro CATALOG hardcoded — vitrine vazia é honesta.
     let cancelled = false
     loadCatalogFromSupabase()
-      .then((rows) => {
+      .then((res) => {
         if (!cancelled) {
-          setBooks(rows.length > 0 ? rows : CATALOG)
+          setBooks(res.books)
+          setCatalogError(res.error)
           setLoadingCatalog(false)
         }
       })
       .catch(() => {
-        if (!cancelled) setLoadingCatalog(false)
+        if (!cancelled) {
+          setCatalogError('fetch_falhou')
+          setLoadingCatalog(false)
+        }
       })
     return () => {
       cancelled = true
@@ -153,6 +158,12 @@ export function StorePage({ onBuy, library, onGoLibrary }: Props) {
         {loadingCatalog && books.length === 0 ? (
           <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted)' }}>
             Carregando catálogo...
+          </div>
+        ) : !loadingCatalog && books.length === 0 ? (
+          <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted)' }}>
+            {catalogError
+              ? 'Catálogo temporariamente indisponível. Tente recarregar.'
+              : 'Nenhum ebook disponível na loja no momento.'}
           </div>
         ) : (
           books.map((book) => (

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CATALOG } from './domain/catalog'
 import type { Book } from './domain/types'
 import {
   buyBookRemote,
@@ -154,23 +153,17 @@ function InnerApp() {
     [isAuthenticated],
   )
 
-  // Tenta achar no CATALOG hardcoded primeiro (livros da loja)
-  const catalogBook: Book | undefined = useMemo(() => {
-    if (!bookId) return undefined
-    return CATALOG.find((book) => book.id === bookId)
-  }, [bookId])
-
-  // Se não achou no catalog, busca no Supabase (livros uploaded pelo user)
+  // Vitrine = Supabase (filtro server-side admin+publicado+preço>0).
+  // O CATALOG hardcoded foi desativado em src/domain/catalog.ts — não usar mais.
+  // Pra abrir /reader/{id}, busca o slug OU id direto no Supabase.
   useEffect(() => {
     let cancelled = false
     setDynamicBook(null)
     if (!bookId) return
-    if (catalogBook) return // já resolveu
     if (!isAuthenticated || !SUPABASE_READY) return
 
     loadEbookBySlug(bookId).then((row) => {
       if (cancelled || !row) return
-      // Constrói um Book "virtual" — sem chunks (usa RAG no Supabase)
       const virtual: Book = {
         id: bookId,
         title: row.title,
@@ -185,9 +178,9 @@ function InnerApp() {
       setDynamicBook(virtual)
     })
     return () => { cancelled = true }
-  }, [bookId, catalogBook, isAuthenticated])
+  }, [bookId, isAuthenticated])
 
-  const activeBook: Book | undefined = catalogBook ?? dynamicBook ?? undefined
+  const activeBook: Book | undefined = dynamicBook ?? undefined
 
   const handleBuyClick = useCallback((book: Book) => {
     if (!isAuthenticated) {
@@ -298,7 +291,6 @@ function InnerApp() {
           <AdminPage
             library={library}
             progress={progress}
-            catalog={CATALOG}
             user={user}
             onReset={handleResetLibrary}
           />

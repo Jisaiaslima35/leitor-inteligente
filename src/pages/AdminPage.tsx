@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
-import { RefreshCcw, ShoppingBag, Users, Library, Shield, ChevronUp, ChevronDown, Search, Trash2 } from 'lucide-react'
-import type { Book, User } from '../domain/types'
+import { RefreshCcw, ShoppingBag, Users, Library, Shield, ChevronUp, ChevronDown, Search, Trash2, Upload, BookOpen, CheckCircle2, Circle } from 'lucide-react'
+import type { User } from '../domain/types'
 import type { LibraryState, ProgressState } from '../domain/library'
 import { ownsBook } from '../domain/library'
 import { getProgress } from '../domain/progress'
 import { supabase, SUPABASE_READY } from '../lib/supabase'
 import { CampaignLinkButton } from '../components/CampaignLinkButton'
+import { ADMIN_USER_ID, isAdminUser } from '../lib/admin'
 
 interface Props {
   library: LibraryState
   progress: ProgressState
-  catalog: Book[]
   user: User
   onReset: () => void
 }
@@ -37,6 +37,19 @@ interface PurchaseRow {
   paid_at: string | null
 }
 
+interface EbookRow {
+  id: string
+  slug: string
+  title: string
+  author: string | null
+  cover_url: string | null
+  price_cents: number
+  is_published: boolean
+  owner_user_id: string | null
+  pdf_storage_path: string | null
+  created_at: string
+}
+
 function formatPrice(cents: number) {
   return (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
@@ -46,18 +59,28 @@ function formatDate(iso?: string | null) {
   return new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
 }
 
-type Tab = 'overview' | 'users' | 'purchases'
+type Tab = 'overview' | 'users' | 'purchases' | 'ebooks'
 
-export function AdminPage({ library, progress, catalog, user, onReset }: Props) {
+export function AdminPage({ library, progress, user, onReset }: Props) {
   const [tab, setTab] = useState<Tab>('overview')
   const [profiles, setProfiles] = useState<ProfileRow[]>([])
   const [purchases, setPurchases] = useState<PurchaseRow[]>([])
+  const [myEbooks, setMyEbooks] = useState<EbookRow[]>([])
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [busyId, setBusyId] = useState<string | null>(null)
+  // Upload admin
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [uploadTitle, setUploadTitle] = useState('')
+  const [uploadSlug, setUploadSlug] = useState('')
+  const [uploadPrice, setUploadPrice] = useState('990')
+  const [uploadPublishing, setUploadPublishing] = useState(true)
+  const [uploadBusy, setUploadBusy] = useState(false)
+  const [uploadMsg, setUploadMsg] = useState<string | null>(null)
 
-  const isAdmin = profiles.some((p) => p.id === user.id && p.role === 'admin')
+  // Identificação do admin vem de src/lib/admin.ts (centralizada).
+  const isAdmin = isAdminUser(user) || profiles.some((p) => p.id === user.id && p.role === 'admin')
 
   const loadAll = async () => {
     if (!SUPABASE_READY) {
@@ -67,7 +90,7 @@ export function AdminPage({ library, progress, catalog, user, onReset }: Props) 
     setLoading(true)
     setErr(null)
     try {
-      const [{ data: profs, error: e1 }, { data: purs, error: e2 }] = await Promise.all([
+      const [{ data: profs, error: e1 }, { data: purs, error: e2 }, { data: ebooks, error: e3 }] = await Promise.all([
         supabase
           .from('profiles')
           .select('id, email, full_name, role, created_at, last_login_at, deleted_at')
@@ -77,11 +100,18 @@ export function AdminPage({ library, progress, catalog, user, onReset }: Props) 
           .select('id, user_id, ebook_id, amount_cents, currency, payment_method, status, created_at, paid_at')
           .order('created_at', { ascending: false })
           .limit(200),
+        supabase
+          .from('ebooks')
+          .select('id, slug, title, author, cover_url, price_cents, is_published, owner_user_id, pdf_storage_path, created_at')
+          .eq('owner_user_id', ADMIN_USER_ID)
+          .order('created_at', { ascending: false }),
       ])
       if (e1) throw new Error(`profiles: ${e1.message}`)
       if (e2) throw new Error(`purchases: ${e2.message}`)
+      if (e3) throw new Error(`ebooks: ${e3.message}`)
       setProfiles((profs ?? []) as ProfileRow[])
       setPurchases((purs ?? []) as PurchaseRow[])
+      setMyEbooks((ebooks ?? []) as EbookRow[])
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -115,18 +145,6 @@ export function AdminPage({ library, progress, catalog, user, onReset }: Props) 
     }
   }, [profiles, purchases])
 
-  const demoStats = useMemo(() => {
-    const totalSales = library.purchases.length
-    const revenue = library.purchases.reduce((sum, purchase) => {
-      const book = catalog.find((item) => item.id === purchase.bookId)
-      return sum + (book?.price ?? 0)
-    }, 0)
-    const readingNow = library.purchases.filter((purchase) =>
-      getProgress(progress, purchase.userId, purchase.bookId),
-    ).length
-    return { totalSales, revenue, readingNow }
-  }, [library, progress, catalog])
-
   const updateRole = async (id: string, role: 'user' | 'admin') => {
     setBusyId(id)
     const { error } = await supabase.from('profiles').update({ role, updated_at: new Date().toISOString() }).eq('id', id)
@@ -145,6 +163,69 @@ export function AdminPage({ library, progress, catalog, user, onReset }: Props) 
     if (error) setErr(error.message)
     await loadAll()
     setBusyId(null)
+  }
+
+  const togglePublished = async (ebook: EbookRow) => {
+    setBusyId(ebook.id)
+    const { error } = await supabase
+      .from('ebooks')
+      .update({ is_published: !ebook.is_published, updated_at: new Date().toISOString() })
+      .eq('id', ebook.id)
+    if (error) setErr(error.message)
+    await loadAll()
+    setBusyId(null)
+  }
+
+  const deleteEbook = async (ebook: EbookRow) => {
+    if (!confirm(`Excluir "${ebook.title}"? Esta ação não pode ser desfeita.`)) return
+    setBusyId(ebook.id)
+    const { error } = await supabase.from('ebooks').delete().eq('id', ebook.id)
+    if (error) setErr(error.message)
+    await loadAll()
+    setBusyId(null)
+  }
+
+  const submitAdminUpload = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!isAdmin) {
+      setUploadMsg('❌ Você não é admin.')
+      return
+    }
+    if (!uploadFile || !uploadTitle || !uploadSlug) {
+      setUploadMsg('❌ Preencha arquivo, título e slug.')
+      return
+    }
+    setUploadBusy(true)
+    setUploadMsg(null)
+    try {
+      const form = new FormData()
+      form.append('file', uploadFile)
+      form.append('title', uploadTitle)
+      form.append('slug', uploadSlug)
+      form.append('price_cents', uploadPrice || '0')
+      form.append('is_published', String(uploadPublishing))
+      form.append('admin_token', 'admin-bypass-leitor-2026')
+      const resp = await fetch('/leitor-inteligente/upload-api/api/admin/upload-book', {
+        method: 'POST',
+        headers: { 'X-Admin-Token': 'admin-bypass-leitor-2026' },
+        body: form,
+      })
+      const json = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        setUploadMsg(`❌ ${json.error || `HTTP ${resp.status}`}`)
+      } else {
+        setUploadMsg(`✅ Livro "${json.title}" criado (${json.slug}). ${json.indexed ? 'Indexado.' : 'Indexação em background.'}`)
+        setUploadFile(null)
+        setUploadTitle('')
+        setUploadSlug('')
+        setUploadPrice('990')
+        await loadAll()
+      }
+    } catch (err: any) {
+      setUploadMsg(`❌ ${err?.message || 'Falha no upload'}`)
+    } finally {
+      setUploadBusy(false)
+    }
   }
 
   return (
@@ -173,14 +254,15 @@ export function AdminPage({ library, progress, catalog, user, onReset }: Props) 
         </div>
       )}
 
-      <nav style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        {(['overview', 'users', 'purchases'] as Tab[]).map((t) => (
+      <nav style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+        {(['overview', 'ebooks', 'users', 'purchases'] as Tab[]).map((t) => (
           <button
             key={t}
             className={`btn ${tab === t ? 'btn-primary' : ''}`}
             onClick={() => setTab(t)}
           >
             {t === 'overview' && 'Visão geral'}
+            {t === 'ebooks' && `Meus livros (${myEbooks.length})`}
             {t === 'users' && `Usuários (${profiles.length})`}
             {t === 'purchases' && `Vendas (${purchases.length})`}
           </button>
@@ -201,38 +283,190 @@ export function AdminPage({ library, progress, catalog, user, onReset }: Props) 
               <small style={{ color: 'var(--muted)' }}>{totals.pending} pendentes</small>
             </div>
             <div className="kpi-card">
-              <div className="label"><Library size={14} style={{ display: 'inline', marginRight: 6 }} />Catálogo</div>
-              <div className="value">{catalog.length}</div>
-              <small style={{ color: 'var(--muted)' }}>demo: {demoStats.totalSales} vendas simuladas</small>
+              <div className="label"><Library size={14} style={{ display: 'inline', marginRight: 6 }} />Meu catálogo</div>
+              <div className="value">{myEbooks.length}</div>
+              <small style={{ color: 'var(--muted)' }}>
+                {myEbooks.filter((b) => b.is_published).length} publicados
+              </small>
             </div>
           </div>
 
           <div className="admin-table" style={{ marginTop: 24 }}>
-            <h3 style={{ marginBottom: 12 }}>Catálogo (demo)</h3>
+            <h3 style={{ marginBottom: 12 }}>Vitrine ativa (publicados)</h3>
             <table>
               <thead>
                 <tr>
                   <th>Livro</th>
                   <th>Status</th>
-                  <th>Progresso</th>
                   <th>Preço</th>
                   <th>Campanha</th>
                 </tr>
               </thead>
               <tbody>
-                {catalog.map((book) => {
-                  const owned = ownsBook(library, 'demo-user', book.id)
-                  const item = getProgress(progress, 'demo-user', book.id)
-                  return (
-                    <tr key={book.id}>
-                      <td>{book.title}<br /><small style={{ color: 'var(--muted)' }}>{book.author}</small></td>
-                      <td>{owned ? 'Comprado' : 'Disponível'}</td>
-                      <td>{item ? `${item.percent}% (p. ${item.page}/${item.totalPages})` : '—'}</td>
-                      <td>{formatPrice(book.price)}</td>
-                      <td><CampaignLinkButton ebookSlug={book.id} /></td>
-                    </tr>
-                  )
-                })}
+                {myEbooks.filter((b) => b.is_published).map((book) => (
+                  <tr key={book.id}>
+                    <td>{book.title}<br /><small style={{ color: 'var(--muted)' }}>{book.author || '—'}</small></td>
+                    <td><CheckCircle2 size={14} style={{ display: 'inline', marginRight: 4, color: 'var(--accent)' }} />Publicado</td>
+                    <td>{formatPrice(book.price_cents)}</td>
+                    <td><CampaignLinkButton ebookSlug={book.slug} /></td>
+                  </tr>
+                ))}
+                {myEbooks.filter((b) => b.is_published).length === 0 && (
+                  <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--muted)' }}>Nenhum ebook publicado. Use a aba "Meus livros" pra subir um.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {tab === 'ebooks' && (
+        <>
+          {isAdmin && (
+            <div className="kpi-card" style={{ marginBottom: 24 }}>
+              <h3 style={{ marginTop: 0 }}>
+                <Upload size={18} style={{ display: 'inline', marginRight: 6, verticalAlign: 'text-bottom' }} />
+                Subir livro livre
+              </h3>
+              <p style={{ color: 'var(--muted)', marginTop: 4, fontSize: 14 }}>
+                Upload administrativo — não passa por pagamento, vai direto pra sua Biblioteca e (se publicado) pra Loja/Início.
+              </p>
+              <form onSubmit={submitAdminUpload} style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <small>PDF do livro</small>
+                  <input
+                    type="file"
+                    accept="application/pdf"
+                    onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+                    disabled={uploadBusy}
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <small>Título</small>
+                  <input
+                    type="text"
+                    value={uploadTitle}
+                    onChange={(e) => {
+                      setUploadTitle(e.target.value)
+                      if (!uploadSlug) {
+                        // auto-gera slug do título
+                        setUploadSlug(e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60))
+                      }
+                    }}
+                    placeholder="O Pequeno Príncipe"
+                    disabled={uploadBusy}
+                    style={{ padding: 8, borderRadius: 8, border: '1px solid var(--border)' }}
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <small>Slug (URL: /comprar/{uploadSlug || 'meu-livro'})</small>
+                  <input
+                    type="text"
+                    value={uploadSlug}
+                    onChange={(e) => setUploadSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]+/g, '-'))}
+                    placeholder="meu-livro"
+                    disabled={uploadBusy}
+                    style={{ padding: 8, borderRadius: 8, border: '1px solid var(--border)' }}
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <small>Preço (em centavos — 990 = R$ 9,90)</small>
+                  <input
+                    type="number"
+                    min="0"
+                    value={uploadPrice}
+                    onChange={(e) => setUploadPrice(e.target.value)}
+                    disabled={uploadBusy}
+                    style={{ padding: 8, borderRadius: 8, border: '1px solid var(--border)' }}
+                  />
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={uploadPublishing}
+                    onChange={(e) => setUploadPublishing(e.target.checked)}
+                    disabled={uploadBusy}
+                  />
+                  <small>Publicar imediatamente (aparece em Loja/Início)</small>
+                </label>
+                <button type="submit" className="btn btn-primary" disabled={uploadBusy}>
+                  {uploadBusy ? 'Enviando…' : 'Subir e publicar'}
+                </button>
+                {uploadMsg && (
+                  <div style={{ padding: 8, borderRadius: 8, background: 'var(--bg-secondary)' }}>
+                    {uploadMsg}
+                  </div>
+                )}
+              </form>
+            </div>
+          )}
+
+          <div className="admin-table">
+            <h3 style={{ marginTop: 0, marginBottom: 12 }}>
+              <BookOpen size={18} style={{ display: 'inline', marginRight: 6, verticalAlign: 'text-bottom' }} />
+              Minha biblioteca de admin
+            </h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Capa</th>
+                  <th>Livro</th>
+                  <th>Preço</th>
+                  <th>Status</th>
+                  <th>Criado</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {myEbooks.length === 0 && (
+                  <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--muted)' }}>Nenhum livro seu ainda. Use o formulário acima pra subir o primeiro.</td></tr>
+                )}
+                {myEbooks.map((book) => (
+                  <tr key={book.id}>
+                    <td style={{ width: 60 }}>
+                      {book.cover_url ? (
+                        <img src={book.cover_url} alt="" style={{ width: 50, height: 70, objectFit: 'cover', borderRadius: 4 }} />
+                      ) : (
+                        <div style={{ width: 50, height: 70, background: 'var(--bg-secondary)', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)' }}>
+                          <BookOpen size={18} />
+                        </div>
+                      )}
+                    </td>
+                    <td>
+                      <strong>{book.title}</strong><br />
+                      <small style={{ color: 'var(--muted)' }}>{book.author || '—'} • {book.slug}</small>
+                    </td>
+                    <td>{formatPrice(book.price_cents)}</td>
+                    <td>
+                      {book.is_published ? (
+                        <span className="badge badge-admin">publicado</span>
+                      ) : (
+                        <span className="badge badge-user">rascunho</span>
+                      )}
+                    </td>
+                    <td>{formatDate(book.created_at)}</td>
+                    <td style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <button
+                        className="btn"
+                        disabled={busyId === book.id}
+                        onClick={() => togglePublished(book)}
+                        title={book.is_published ? 'Despublicar' : 'Publicar'}
+                      >
+                        {book.is_published ? <Circle size={14} /> : <CheckCircle2 size={14} />}
+                        {book.is_published ? 'Despublicar' : 'Publicar'}
+                      </button>
+                      <CampaignLinkButton ebookSlug={book.slug} />
+                      <button
+                        className="btn btn-danger"
+                        disabled={busyId === book.id}
+                        onClick={() => deleteEbook(book)}
+                        title="Excluir definitivamente"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -324,7 +558,7 @@ export function AdminPage({ library, progress, catalog, user, onReset }: Props) 
               )}
               {purchases.map((p) => {
                 const buyer = profiles.find((pr) => pr.id === p.user_id)
-                const book = catalog.find((b) => b.id === p.ebook_id)
+                const book = myEbooks.find((b) => b.id === p.ebook_id)
                 return (
                   <tr key={p.id}>
                     <td>{formatDate(p.created_at)}</td>

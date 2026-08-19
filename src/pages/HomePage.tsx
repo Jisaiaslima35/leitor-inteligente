@@ -1,9 +1,10 @@
+import { useEffect, useState } from 'react'
 import { ArrowRight, Sparkles } from 'lucide-react'
 import type { Route } from '../App'
 import type { LibraryState } from '../domain/library'
 import type { Book } from '../domain/types'
 import { BookCard } from '../components/BookCard'
-import { CATALOG } from '../domain/catalog'
+import { loadCatalogFromSupabase } from '../lib/catalogSupabase'
 import { ownsBook } from '../domain/library'
 
 interface Props {
@@ -13,7 +14,24 @@ interface Props {
 }
 
 export function HomePage({ onNavigate, onBuy, library }: Props) {
-  const featured = CATALOG[0]
+  const [books, setBooks] = useState<Book[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    loadCatalogFromSupabase().then((res) => {
+      if (cancelled) return
+      setBooks(res.books)
+      setError(res.error)
+      setLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const featured = books[0]
+
   return (
     <section>
       <div className="hero">
@@ -30,7 +48,7 @@ export function HomePage({ onNavigate, onBuy, library }: Props) {
             <button className="btn btn-primary" onClick={() => onNavigate('store')}>
               Ver loja <ArrowRight size={16} />
             </button>
-            {ownsBook(library, 'demo-user', featured.id) ? (
+            {featured && (ownsBook(library, 'demo-user', featured.id) ? (
               <button className="btn btn-secondary" onClick={() => onNavigate('reader', featured.id)}>
                 Continuar lendo
               </button>
@@ -38,37 +56,51 @@ export function HomePage({ onNavigate, onBuy, library }: Props) {
               <button className="btn btn-secondary" onClick={() => onBuy(featured)}>
                 Comprar o destaque
               </button>
-            )}
+            ))}
           </div>
         </div>
-        <div style={{ position: 'relative' }}>
-          <div style={{
-            width: '100%', aspectRatio: '3/4',
-            backgroundImage: `url(${featured.cover})`,
-            backgroundSize: 'cover',
-            backgroundPosition: 'center',
-            borderRadius: 18,
-            boxShadow: '0 30px 60px rgba(0,0,0,0.4)',
-            transform: 'rotate(3deg)',
-          }} aria-hidden="true" />
-        </div>
+        {featured && (
+          <div style={{ position: 'relative' }}>
+            <div style={{
+              width: '100%', aspectRatio: '3/4',
+              backgroundImage: `url(${featured.cover})`,
+              backgroundSize: 'cover',
+              backgroundPosition: 'center',
+              borderRadius: 18,
+              boxShadow: '0 30px 60px rgba(0,0,0,0.4)',
+              transform: 'rotate(3deg)',
+            }} aria-hidden="true" />
+          </div>
+        )}
       </div>
 
       <div className="section-title">
         <h2>Destaques da semana</h2>
         <small>3 livros pensados pra mudar sua rotina</small>
       </div>
-      <div className="book-grid">
-        {CATALOG.map((book) => (
-          <BookCard
-            key={book.id}
-            book={book}
-            owned={ownsBook(library, 'demo-user', book.id)}
-            onBuy={() => onBuy(book)}
-            onRead={() => onNavigate('reader', book.id)}
-          />
-        ))}
-      </div>
+      {loading ? (
+        <p style={{ color: 'var(--muted)' }}>Carregando catálogo…</p>
+      ) : error ? (
+        <p style={{ color: 'var(--muted)' }}>
+          Catálogo temporariamente indisponível. Tente recarregar.
+        </p>
+      ) : books.length === 0 ? (
+        <p style={{ color: 'var(--muted)' }}>
+          Nenhum ebook publicado pelo administrador ainda.
+        </p>
+      ) : (
+        <div className="book-grid">
+          {books.map((book) => (
+            <BookCard
+              key={book.id}
+              book={book}
+              owned={ownsBook(library, 'demo-user', book.id)}
+              onBuy={() => onBuy(book)}
+              onRead={() => onNavigate('reader', book.id)}
+            />
+          ))}
+        </div>
+      )}
     </section>
   )
 }
