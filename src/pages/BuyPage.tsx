@@ -75,11 +75,15 @@ function buildCheckoutUrl(book: Book, email: string, uid: string, trafficSource:
 }
 
 export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Props) {
-  const { isAuthenticated, isReady } = useAuth()
+  const { isAuthenticated, isReady, user } = useAuth()
+
   const [book, setBook] = useState<Book | null | undefined>(undefined)
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [building, setBuilding] = useState(false)
+  // Estado de "cliquei mas o Asaas ainda não respondeu" — feedback visual
+  // durante a navegação cross-origin (que leva 2-4s via CDN Cloudflare).
+  const [navigating, setNavigating] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -123,6 +127,17 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
     let cancelled = false
     setBuilding(true)
     setError(null)
+    const buildIt = (uid: string, email: string) => {
+      const url = buildCheckoutUrl(book, email, uid, trafficSource)
+      setCheckoutUrl(url)
+      try {
+        localStorage.setItem(
+          'leitor-ia:pending-checkout',
+          JSON.stringify({ bookId: book.id, bookTitle: book.title, at: Date.now() }),
+        )
+      } catch {}
+      setBuilding(false)
+    }
     supabase.auth.getSession().then(({ data }) => {
       if (cancelled) return
       const sess = data.session
@@ -133,23 +148,14 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
         }`
         return
       }
-      const url = buildCheckoutUrl(book, sess.user.email, sess.user.id, trafficSource)
-      setCheckoutUrl(url)
-      // Marca visual "vai pagar" pro banner da Loja saber
-      try {
-        localStorage.setItem(
-          'leitor-ia:pending-checkout',
-          JSON.stringify({ bookId: book.id, bookTitle: book.title, at: Date.now() }),
-        )
-      } catch {}
-      setBuilding(false)
+      buildIt(sess.user.id, sess.user.email)
     }).catch((e) => {
       if (cancelled) return
       setError(e?.message ?? 'Falha ao montar checkout')
       setBuilding(false)
     })
     return () => { cancelled = true }
-  }, [isReady, isAuthenticated, book, checkoutUrl, trafficSource])
+  }, [isReady, isAuthenticated, book, checkoutUrl, trafficSource, user])
 
   if (book === undefined) {
     return (
@@ -222,14 +228,18 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
               target="_top"
               rel="noopener"
               onClick={() => {
-                // Marca que o user clicou — ajuda no debug e força o
-                // browser a tratar como navegação iniciada pelo user.
+                // Marca que o user clicou — força o browser a tratar
+                // como navegação iniciada pelo user (sem isso, extensões
+                // e PWA installers podem bloquear o cross-origin).
+                // Também ativa feedback visual durante os 2-4s de espera
+                // do `/api/checkout/redirect` (CDN Cloudflare + Asaas).
                 try {
                   localStorage.setItem(
                     'leitor-ia:pending-checkout',
                     JSON.stringify({ bookId: book.id, bookTitle: book.title, at: Date.now() }),
                   )
                 } catch {}
+                setNavigating(true)
               }}
               style={{
                 display: 'inline-block',
@@ -238,9 +248,18 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
                 fontSize: 16,
                 fontWeight: 600,
                 textDecoration: 'none',
+                opacity: navigating ? 0.7 : 1,
+                pointerEvents: navigating ? 'none' : 'auto',
               }}
             >
-              💳 Pagar agora R$ {(book.price / 100).toFixed(2)}
+              {navigating ? (
+                <>
+                  <span className="spinner" style={{ marginRight: 8, verticalAlign: 'middle' }} />
+                  Redirecionando pro Asaas…
+                </>
+              ) : (
+                <>💳 Pagar agora R$ {(book.price / 100).toFixed(2)}</>
+              )}
             </a>
           ) : building ? (
             <button className="btn btn-primary" disabled>
