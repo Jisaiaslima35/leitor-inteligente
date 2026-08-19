@@ -3,7 +3,7 @@
  *
  * Fluxo:
  * 1. Extrai ebook_id e ?src= da URL
- * 2. Se logado: vai direto pro checkout Asaas
+ * 2. Se logado: vai direto pro checkout Asaas (via window.location.href)
  * 3. Se NÃO logado: salva em sessionStorage e mostra tela de login
  *    O listener global onAuthStateChange no App.tsx detecta o login
  *    e redireciona pra cá de volta, independente de qual tela
@@ -62,6 +62,7 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
   const { isAuthenticated, isReady } = useAuth()
   const [book, setBook] = useState<Book | null | undefined>(undefined)  // undefined=loading, null=not found
   const [error, setError] = useState<string | null>(null)
+  const [attempted, setAttempted] = useState(false)
 
   // Resolve o livro: CATALOG primeiro, depois Supabase
   useEffect(() => {
@@ -101,11 +102,15 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
     }
   }, [isAuthenticated])
 
-  // Logado + livro carregado → inicia checkout
+  // Logado + livro carregado + ainda não tentou → inicia checkout UMA vez
   useEffect(() => {
-    if (!isReady || !isAuthenticated || !book) return
-    startCheckout(book, trafficSource)
-  }, [isReady, isAuthenticated, book, trafficSource])
+    if (!isReady || !isAuthenticated || !book || attempted) return
+    setAttempted(true)  // trava pra não reentrar
+    startCheckout(book, trafficSource).catch((e) => {
+      setError(e?.message ?? 'Falha ao iniciar checkout')
+      setAttempted(false)  // libera pra retry em caso de erro
+    })
+  }, [isReady, isAuthenticated, book, attempted, trafficSource])
 
   // Tela de transição: usuário acabou de autenticar mas o checkout ainda
   // tá sendo preparado. Mostra spinner pra não deixar tela vazia e dar
@@ -134,7 +139,21 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
         <p style={{ color: 'var(--muted)' }}>
           Você será redirecionado pro pagamento de <strong>{book.title}</strong> (R$ {(book.price / 100).toFixed(2)}).
         </p>
-        {error && <p style={{ color: 'salmon' }}>{error}</p>}
+        {error ? (
+          <>
+            <p style={{ color: 'salmon' }}>{error}</p>
+            <button className="btn btn-primary" onClick={() => { setAttempted(false); setError(null) }}>
+              Tentar de novo
+            </button>
+          </>
+        ) : (
+          <p style={{ fontSize: 12, color: 'var(--muted)' }}>
+            Se esta tela travar por mais de 10s,{' '}
+            <a href={`https://pay.automacaojs.us/api/checkout/redirect?slug=${encodeURIComponent(book.id)}${trafficSource ? `&src=${encodeURIComponent(trafficSource)}` : ''}`}>
+              clique aqui pra ir pro checkout manualmente
+            </a>.
+          </p>
+        )}
       </section>
     )
   }
@@ -188,7 +207,8 @@ async function startCheckout(book: Book, trafficSource: string | null) {
   })
   if (trafficSource) params.set('src', trafficSource)
 
-  // Marca visual "estou indo pagar"
+  // Marca visual "estou indo pagar" — banner da StorePage usa isso pra
+  // detectar "pagou mas ainda não caiu na biblioteca"
   try {
     localStorage.setItem(
       'leitor-ia:pending-checkout',
@@ -196,6 +216,13 @@ async function startCheckout(book: Book, trafficSource: string | null) {
     )
   } catch {}
 
-  // Navegação GET (mais robusto em mobile que fetch + location.href)
-  window.location.href = `https://pay.automacaojs.us/api/checkout/redirect?${params.toString()}`
+  // Navegação hard via window.location.assign — equivalente a location.href
+  // mas algumas extensões de browser interceptam o segundo. assign é mais
+  // garantido como navegação real (não só atribuição).
+  const target = `https://pay.automacaojs.us/api/checkout/redirect?${params.toString()}`
+  // Pequeno delay pra garantir que o React já pintou o spinner antes da
+  // navegação full-page (evita race onde o browser pinta a home antes de
+  // capturar o navigate)
+  await new Promise((r) => setTimeout(r, 50))
+  window.location.assign(target)
 }
