@@ -559,16 +559,19 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
         print(f'[upload-job] {len(pages)} embeddings salvos', flush=True)
 
         # 9. EXTRAÇÃO AUTOMÁTICA DE CAPA (PyMuPDF + heurística de página vazia)
+        # Bucket: book-covers (PÚBLICO) — capa precisa carregar sem signed URL
+        # (bucket 'ebooks' é privado pra PDFs; capas iam pra /public/ebooks/... que retornava 400)
         cover_url = None
         try:
             from cover_extractor import extract_cover as _extract_cover
             cover_local = f'{tmp_dir}/cover.jpg'
             extracted = _extract_cover(final_pdf_local, cover_local, max_pages=5)
             if extracted and os.path.exists(extracted):
-                cover_storage_path = f'{user_id}/{ebook_id}/cover.jpg'
-                # Upload via REST signed upload (token vem do /upload-url/sign)
+                cover_storage_path = f'{ebook_id}/cover.jpg'  # sem user_id — capa é pública
+                cover_bucket = 'book-covers'  # bucket público
+                # Upload via REST signed upload (token vem do /upload/sign)
                 sign_req = Request(
-                    f'{SUPABASE_URL}/storage/v1/object/upload/sign/ebooks/{cover_storage_path}',
+                    f'{SUPABASE_URL}/storage/v1/object/upload/sign/{cover_bucket}/{cover_storage_path}',
                     headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
                     method='POST'
                 )
@@ -578,7 +581,7 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
                 with open(extracted, 'rb') as f:
                     cover_bytes = f.read()
                 upload_req = Request(
-                    f'{SUPABASE_URL}/storage/v1/object/upload/sign/ebooks/{cover_storage_path}?token={token}',
+                    f'{SUPABASE_URL}/storage/v1/object/upload/sign/{cover_bucket}/{cover_storage_path}?token={token}',
                     data=cover_bytes,
                     headers={
                         'apikey': SUPABASE_SR,
@@ -590,9 +593,9 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
                 )
                 with urlopen(upload_req, timeout=30) as r:
                     upload_resp = json.loads(r.read())
-                    print(f'[upload-job] cover uploaded: {cover_storage_path}', flush=True)
-                # URL pública (bucket ebooks já é público pra leitura via signed URL)
-                cover_url = f'{SUPABASE_URL}/storage/v1/object/public/ebooks/{cover_storage_path}'
+                    print(f'[upload-job] cover uploaded: {cover_bucket}/{cover_storage_path}', flush=True)
+                # URL pública direta (bucket book-covers é público)
+                cover_url = f'{SUPABASE_URL}/storage/v1/object/public/book-covers/{cover_storage_path}'
                 print(f'[upload-job] cover_url: {cover_url}', flush=True)
         except Exception as cover_err:
             print(f'[upload-job] cover extraction falhou (não-crítico): {cover_err}', flush=True)
@@ -635,6 +638,23 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
         except Exception as e:
             print(f'[upload-job] ERRO user_library: {e}', flush=True)
             raise
+
+        # 10a. Marca upload_payments.consumed_at=now() — fecha o canal (modelo R$10 por livro)
+        # Idempotente. Falha aqui NÃO repropaga (best-effort) — email já vai notificar sucesso.
+        print(f'[upload-job] chamando mark-consumed pra ebook={ebook_id}...', flush=True)
+        try:
+            mark_req = Request(
+                'http://127.0.0.1:3019/api/upload/mark-consumed',
+                data=json.dumps({'ebook_id': ebook_id, 'user_id': user_id}).encode(),
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+            with urlopen(mark_req, timeout=10) as r:
+                mark_resp = json.loads(r.read())
+                print(f'[upload-job] mark-consumed OK: {mark_resp}', flush=True)
+        except Exception as e:
+            print(f'[upload-job] AVISO mark-consumed falhou (best-effort): {e}', flush=True)
+            traceback.print_exc()
 
         # 10b. Notificação por email (Path B) — em thread daemon pra não bloquear
         def _send_email():
