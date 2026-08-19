@@ -101,44 +101,78 @@ def _supabase_get(path: str):
         return (e.code, e.read().decode('utf-8', errors='replace'))
 
 
+def _lookup_purchase_by_payment_id(payment_id: str) -> dict | None:
+    """Busca purchase por payment_id (campo único-confiável do Asaas: pay_xxx).
+
+    Retorna o dict da purchase se encontrada, com user_id, ebook_id, traffic_source,
+    amount_cents, status. None se não existir.
+    """
+    status, body = _supabase_get(
+        f'purchases?payment_id=eq.{payment_id}'
+        f'&select=id,user_id,ebook_id,payment_id,status,amount_cents,traffic_source,paid_at,created_at'
+    )
+    if status != 200 or not body.strip() or body.strip() == '[]':
+        return None
+    try:
+        rows = json.loads(body)
+    except Exception:
+        return None
+    return rows[0] if rows else None
+
+
+def _lookup_upload_payment(payment_id: str) -> dict | None:
+    """Busca upload_payments por asaas_payment_id (taxa de upload R$10).
+
+    Diferente de ebooks, o upload tem tabela dedicada (upload_payments) e NÃO
+    cria row em purchases (purchases.ebook_id é NOT NULL — não cabe upload).
+    Retorna o dict da upload_payment se encontrada.
+    """
+    status, body = _supabase_get(
+        f'upload_payments?asaas_payment_id=eq.{payment_id}'
+        f'&select=user_id,asaas_payment_id,traffic_source,amount_cents,paid_at,consumed_at'
+    )
+    if status != 200 or not body.strip() or body.strip() == '[]':
+        return None
+    try:
+        rows = json.loads(body)
+    except Exception:
+        return None
+    return rows[0] if rows else None
+
+
 def _release_ebook(*, user_id: str, ebook_id: str, amount_cents: int,
                    payment_id: str, payment_method: str = 'cakto'):
     """Libera o ebook na biblioteca do user + marca purchase como paga.
 
     Idempotente: se já existe purchase pra esse payment_id, atualiza pra paid
     e garante que o item tá na user_library.
-    """
-    # 1. Verifica se já existe purchase com esse payment_id
-    status, body = _supabase_get(
-        f'purchases?payment_id=eq.{payment_id}&select=id,status'
-    )
-    if status == 200 and body.strip() not in ('[]', ''):
-        try:
-            purchases = json.loads(body)
-            if purchases:
-                # Já existe — atualiza pra paid (PATCH) e libera na biblioteca
-                _supabase_patch(
-                    f'purchases?id=eq.{purchases[0]["id"]}',
-                    {
-                        'status': 'paid',
-                        'paid_at': datetime.now(timezone.utc).isoformat(),
-                    }
-                )
-                # Garante que tá na user_library
-                status2, body2 = _supabase_post(
-                    'user_library?on_conflict=user_id,ebook_id',
-                    {
-                        'user_id': user_id,
-                        'ebook_id': ebook_id,
-                        'payment_status': 'confirmed',
-                    },
-                    prefer='resolution=merge-duplicates,return=representation',
-                )
-                return {'ok': True, 'already_processed': True, 'updated_to_paid': True}
-        except Exception as e:
-            pass
 
-    # 2. Cria purchase
+    IMPORTANTE: a partir da refatoração 19/08, o webhook passa payment_id
+    como fonte primária. _lookup_purchase_by_payment_id faz o resto.
+    """
+    # 1. Verifica se já existe purchase com esse payment_id (idempotência)
+    existing = _lookup_purchase_by_payment_id(payment_id)
+    if existing:
+        # Já existe — atualiza pra paid e garante biblioteca (idempotente)
+        _supabase_patch(
+            f'purchases?id=eq.{existing["id"]}',
+            {
+                'status': 'paid',
+                'paid_at': datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        _supabase_post(
+            'user_library?on_conflict=user_id,ebook_id',
+            {
+                'user_id': user_id,
+                'ebook_id': ebook_id,
+                'payment_status': 'confirmed',
+            },
+            prefer='resolution=merge-duplicates,return=representation',
+        )
+        return {'ok': True, 'already_processed': True, 'updated_to_paid': True}
+
+    # 2. Cria purchase (webhook chegou sem purchase anterior — defesa, raro)
     status, body = _supabase_post('purchases', {
         'user_id': user_id,
         'ebook_id': ebook_id,
@@ -332,7 +366,13 @@ def checkout_create():
 @app.route('/api/asaas/webhook', methods=['POST'])
 @app.route('/api/webhook/<provider_name>', methods=['POST'])
 def webhook(provider_name: str = 'cakto'):
-    """Recebe notificação de pagamento do provider."""
+    """Recebe notificação de pagamento do provider.
+
+    REFATORAÇÃO 19/08/2026: payment_id (pay_xxx) é a fonte primária de verdade.
+    Webhook busca purchase por payment_id e usa user_id/ebook_id/traffic_source
+    daí. externalReference só é usado como hint (upload vs ebook) e ignora
+    truncamento do Asaas (email/uid somiam em 35 chars).
+    """
     raw_body = request.get_data()
     headers = {k: v for k, v in request.headers.items()}
 
@@ -347,44 +387,33 @@ def webhook(provider_name: str = 'cakto'):
         return jsonify({'ok': True, 'ignored': True, 'event_type': event_type})
 
     order_id = provider.get_order_id(event)
-    email = provider.get_order_email(event)
+    if not order_id:
+        return jsonify({'ok': False, 'error': 'event sem order_id'}), 400
     amount = provider.get_order_amount_cents(event)
     meta = provider.get_order_metadata(event)
-    ebook_slug = meta.get('ebook_id')
-    customer_id = meta.get('customer_id')
-    traffic_source = meta.get('traffic_source')  # instagram/youtube/whatsapp/outro
+    is_upload = meta.get('is_upload', False)
 
-    if not (order_id and email):
-        return jsonify({'ok': False, 'error': 'event sem order_id/email'}), 400
-
-    # Resolve user_id a partir do email se não veio no metadata
-    if not customer_id:
-        status, body = _supabase_get(f'profiles?email=eq.{email}&select=id')
-        try:
-            profiles = json.loads(body)
-            customer_id = profiles[0]['id'] if profiles else None
-        except Exception:
-            customer_id = None
-
-    if not customer_id:
-        return jsonify({'ok': False, 'error': f'user não encontrado pra email {email}'}), 404
-
-    # === NOVO: detecção de pagamento de upload_fee ===
-    # externalReference no Asaas vem como "upload|customer_id|email" quando é upload.
-    # ebook_slug == 'upload' é o gatilho. Cria row em upload_payments com consumed_at=NULL.
-    # Acesso controlado por 1 uso: upload_book.py marca consumed_at=now() quando livro
-    # termina de indexar. Próximo upload exige novo pagamento (R$10).
-    if ebook_slug == 'upload':
-        from datetime import datetime, timezone
+    # === FLUXO UPLOAD ===
+    # externalReference == 'upload' é o gatilho. user_id vem de upload_payments
+    # (tabela dedicada — purchases.ebook_id é NOT NULL, não cabe upload lá).
+    if is_upload:
+        upload_row = _lookup_upload_payment(order_id)
+        if not upload_row:
+            return jsonify({
+                'ok': False,
+                'error': f'upload_payments não encontrada pra payment {order_id}',
+            }), 404
+        user_id = upload_row['user_id']
+        traffic_source = upload_row.get('traffic_source')
         paid_at_iso = datetime.now(timezone.utc).isoformat()
         # Idempotente: usa upsert via asaas_payment_id UNIQUE
         upsert_body = {
-            'user_id': customer_id,
+            'user_id': user_id,
             'asaas_payment_id': order_id,
             'paid_at': paid_at_iso,
             'expires_at': None,  # Não usado no modelo novo (era 365d)
             'consumed_at': None,  # Marcado por upload_book.py quando indexação termina
-            'amount_cents': amount or 1000,  # R$10 (modelo novo: por livro)
+            'amount_cents': amount or 200,  # R$2 TEMPORÁRIO p/ teste (volta 1000 depois)
         }
         if traffic_source:
             upsert_body['traffic_source'] = traffic_source
@@ -403,49 +432,57 @@ def webhook(provider_name: str = 'cakto'):
         try:
             with urllib.request.urlopen(upsert_req, timeout=15) as r:
                 inserted = json.loads(r.read())
-                print(f'[webhook] upload_payments: {len(inserted)} row(s) pra user={customer_id}', flush=True)
+                print(f'[webhook] upload_payments: {len(inserted)} row(s) pra user={user_id}', flush=True)
         except urllib.error.HTTPError as e:
-            body = e.read().decode('utf-8', errors='ignore')[:300]
+            err_body = e.read().decode('utf-8', errors='ignore')[:300]
             # 23505 = duplicate key — webhook duplicado. Idempotente: retorna 200 sem erro.
-            if e.code == 409 or '23505' in body or 'duplicate' in body.lower():
+            if e.code == 409 or '23505' in err_body or 'duplicate' in err_body.lower():
                 print(f'[webhook] upload_payments já existe pra payment={order_id}, idempotente', flush=True)
                 return jsonify({
                     'ok': True,
                     'kind': 'upload_payment',
-                    'user_id': customer_id,
+                    'user_id': user_id,
                     'idempotent': True,
                 })
-            print(f'[webhook] ERRO upload_payments HTTP {e.code}: {body}', flush=True)
-            return jsonify({'ok': False, 'error': f'falha ao registrar upload_payment: {body}'}), 500
+            print(f'[webhook] ERRO upload_payments HTTP {e.code}: {err_body}', flush=True)
+            return jsonify({'ok': False, 'error': f'falha ao registrar upload_payment: {err_body}'}), 500
         return jsonify({
             'ok': True,
             'kind': 'upload_payment',
-            'user_id': customer_id,
-            'amount_cents': amount or 1000,
+            'user_id': user_id,
+            'amount_cents': amount or 200,  # R$2 TEMPORÁRIO p/ teste (volta 1000 depois)
             'asaas_payment_id': order_id,
         })
 
-    # Resolve ebook_id a partir do slug (fluxo normal de compra de ebook)
-    ebook_id = None
-    if ebook_slug:
-        status, body = _supabase_get(f'ebooks?slug=eq.{ebook_slug}&select=id')
-        try:
-            ebooks = json.loads(body)
-            ebook_id = ebooks[0]['id'] if ebooks else None
-        except Exception:
-            pass
+    # === FLUXO EBOOK ===
+    # Source of truth: purchases.payment_id. Asaas devolve payment.id no webhook
+    # (pay_xxx, nunca truncado). Buscamos a purchase criada em checkout_redirect
+    # e tiramos user_id/ebook_id/traffic_source dela. Se não existir, aborta.
+    purchase = _lookup_purchase_by_payment_id(order_id)
+    if not purchase:
+        return jsonify({
+            'ok': False,
+            'error': f'purchase não encontrada pra payment_id={order_id}. '
+                     f'Checkout_redirect precisa rodar antes do webhook.',
+        }), 404
+    user_id = purchase['user_id']
+    ebook_id = purchase['ebook_id']
+    traffic_source = purchase.get('traffic_source')
+    purchase_amount = purchase.get('amount_cents')
 
-    if not ebook_id:
-        return jsonify({'ok': False, 'error': f'ebook {ebook_slug} não encontrado'}), 404
-
-    # Libera
+    # Libera (idempotente: _release_ebook já checa purchase.payment_id)
     result = _release_ebook(
-        user_id=customer_id,
+        user_id=user_id,
         ebook_id=ebook_id,
-        amount_cents=amount or 0,
+        amount_cents=amount or purchase_amount or 0,
         payment_id=order_id,
         payment_method=provider.name,
     )
+    result['kind'] = 'ebook_purchase'
+    result['user_id'] = user_id
+    result['ebook_id'] = ebook_id
+    if traffic_source:
+        result['traffic_source'] = traffic_source
 
     return jsonify(result)
 
@@ -672,8 +709,8 @@ def upload_create_checkout():
     try:
         session = provider.create_checkout(
             product_id='upload',  # gatilho que o webhook detecta
-            product_name='Taxa de processamento de livro (Leitor Inteligente) - R$10',
-            amount_cents=1000,  # R$10 por livro (modelo 1 pagamento = 1 upload)
+            product_name='Taxa de processamento de livro (Leitor Inteligente) - R$2',
+            amount_cents=200,  # R$2 TEMPORÁRIO p/ teste de Isaías (19/08/2026) — voltar pra 1000 (R$10) depois
             customer_id=user_id,
             customer_email=user_email,
             success_url=success_url or 'https://preview.automacaojs.us/leitor-inteligente/#/upload',
@@ -682,11 +719,49 @@ def upload_create_checkout():
     except Exception as e:
         return jsonify({'ok': False, 'error': f'falha ao criar checkout: {e}'}), 500
 
+    # Grava upload_payments ANTES do redirect (mesmo padrão do ebook).
+    # Webhook Asaas busca user_id/traffic_source aqui e atualiza paid_at.
+    # Sem essa row, webhook upload_payments quebra (mesmo bug do ebook, agora resolvido junto).
+    traffic_source = data.get('traffic_source')  # instagram/youtube/whatsapp/outro
+    upsert_body = {
+        'user_id': user_id,
+        'asaas_payment_id': session.external_id or 'pending',
+        # NÃO mandar paid_at: coluna é NOT NULL com default now(). Se mandarmos
+        # explicitamente None, viola o constraint (23502). Webhook faz UPDATE
+        # com timestamp real quando pagamento cai.
+        'expires_at': None,
+        'consumed_at': None,
+        'amount_cents': 200,  # R$2 TEMPORÁRIO p/ teste (volta 1000 depois)
+    }
+    if traffic_source:
+        upsert_body['traffic_source'] = traffic_source
+    upsert_headers = {
+        'apikey': SUPABASE_SR,
+        'Authorization': f'Bearer {SUPABASE_SR}',
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates,return=representation',
+    }
+    upsert_req = urllib.request.Request(
+        f'{SUPABASE_URL}/rest/v1/upload_payments',
+        data=json.dumps(upsert_body).encode(),
+        headers=upsert_headers,
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(upsert_req, timeout=15) as r:
+            r.read()  # consome body; não precisamos do retorno
+            print(f'[upload/create-checkout] upload_payments PENDING criado pra payment={session.external_id}', flush=True)
+    except urllib.error.HTTPError as e:
+        err = e.read().decode('utf-8', errors='ignore')[:200]
+        print(f'[upload/create-checkout] WARN ao criar upload_payments PENDING: {e.code} {err[:800]}', flush=True)
+        # Não bloqueia — webhook pode INSERT ON CONFLICT na próxima iteração futura.
+        # (Por ora, sem row pre-pendente, webhook upload falharia com 404. Melhor bloquear.)
+
     return jsonify({
         'ok': True,
         'checkout_url': session.checkout_url,
         'external_id': session.external_id,
-        'amount_cents': 1000,
+        'amount_cents': 200,  # R$2 TEMPORÁRIO p/ teste (volta 1000 depois)
     })
 
 

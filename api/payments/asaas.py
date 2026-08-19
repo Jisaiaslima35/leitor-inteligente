@@ -129,14 +129,15 @@ class AsaasProvider(PaymentProvider):
 
         # 2. Cria payment UNDEFINED (cliente escolhe método no checkout)
         amount_brl = max(5.00, amount_cents / 100)
-        # externalReference: "product_id|customer_id|email|traffic_source|..."
-        # metadata livre vai como 4ª+ posição; webhook deserializa em get_order_metadata
-        ext_parts = [product_id, customer_id, customer_email]
-        if metadata:
-            # serializa dict como chave=valor, valor escapado
-            for k, v in metadata.items():
-                ext_parts.append(f'{k}={v}')
-        external_reference = '|'.join(ext_parts)
+        # externalReference CURTO: Asaas trunca silenciosamente em ~35 chars quando passa
+        # de 100. Antes concatenávamos slug|uuid|email|metadata=... (>100 chars) e o Asaas
+        # cortava em 35 — UUID vira "1cf5627b-696", email e metadata sumiam, webhook quebrava.
+        # Agora externalReference é só um hint (slug ou 'upload'). Toda info crítica
+        # (user_id, ebook_id, traffic_source, amount) já está gravada em purchases
+        # durante checkout_redirect (payment_id = external_id retornado aqui).
+        # Webhook busca via purchases?payment_id=eq.{order_id}.payment_id.
+        # Limite seguro: 50 chars, pra acomodar slug de 30 + tag de upload mesmo no pior caso.
+        external_reference = (product_id or '')[:50]
 
         payload = {
             'customer': asaas_customer_id,
@@ -202,12 +203,16 @@ class AsaasProvider(PaymentProvider):
         return payment.get('id') or event.get('id')
 
     def get_order_email(self, event: dict) -> str | None:
-        """Asaas NÃO envia customerEmail no webhook. Pega do externalReference."""
-        # 1. Tenta direto (alguns webhooks Asaas mandam)
+        """Email do pagador. FONTE PRIMÁRIA: campo direto do webhook (Asaas manda às vezes).
+        FALLBACK: externalReference legado (formato antigo slug|uid|email|...).
+
+        NÃO É mais crítico — webhook busca user_id via purchases.payment_id.
+        Aqui só devolvemos quando o provider dá, pra eventual log ou fallback redundante.
+        """
         direct = event.get('payment', {}).get('customerEmail') or event.get('customerEmail')
         if direct:
             return direct
-        # 2. Pega do externalReference: "ebook_slug|customer_id|email"
+        # Fallback legado: tenta extrair do formato antigo "slug|uid|email"
         ext = event.get('payment', {}).get('externalReference') or event.get('externalReference') or ''
         if '|' in ext:
             parts = ext.split('|', 2)
@@ -225,25 +230,27 @@ class AsaasProvider(PaymentProvider):
             return None
 
     def get_order_metadata(self, event: dict) -> dict:
-        """External reference: "ebook_slug|customer_id|email|traffic_source=...".
+        """External reference CURTO — apenas hint do slug (ou 'upload').
 
-        Retorna dict com chaves: ebook_id, customer_id, customer_email + qualquer
-        metadata extra como traffic_source.
+        Antes esse dict carregava ebook_id, customer_id, customer_email, traffic_source
+        (formato "slug|uid|email|traffic_source=instagram"). O Asaas truncava em 35
+        chars silenciosamente, sumindo com email/metadata. Webhook quebrava.
+
+        Agora externalReference é SÓ o slug (ebook) ou a tag 'upload' (taxa upload).
+        Toda info crítica (user_id, ebook_id, traffic_source) é resolvida via
+        purchases.payment_id no payment_server.py — fonte confiável.
+
+        Retorna apenas {'ebook_slug': ..., 'is_upload': bool} pro webhook decidir
+        se é taxa de upload ou ebook normal.
         """
         ext = event.get('payment', {}).get('externalReference') or event.get('externalReference') or ''
-        if '|' not in ext:
-            return {'ebook_id': ext}
-        # split em no máximo 3 partes (preserva '|' dentro de metadata)
-        parts = ext.split('|', 3)
-        result = {
-            'ebook_id': parts[0] if len(parts) > 0 else '',
-            'customer_id': parts[1] if len(parts) > 1 else '',
-            'customer_email': parts[2] if len(parts) > 2 else '',
+        # Mantém parse defensivo do formato legado (caso Asaas ainda devolva algo
+        # do webhook de um pagamento criado antes dessa migração — Asaas já tem
+        # o externalReference armazenado, vai devolver o que recebeu na criação).
+        # O webhook usa SÓ a posição [0] como hint.
+        first = ext.split('|', 1)[0] if '|' in ext else ext
+        return {
+            'ebook_slug': first.strip(),
+            'ebook_id': first.strip(),  # alias pra retrocompatibilidade
+            'is_upload': first.strip().lower() == 'upload',
         }
-        # 4ª parte contém metadata serializado: 'traffic_source=instagram;outro=valor'
-        if len(parts) > 3 and parts[3]:
-            for kv in parts[3].split('|'):
-                if '=' in kv:
-                    k, v = kv.split('=', 1)
-                    result[k] = v
-        return result
