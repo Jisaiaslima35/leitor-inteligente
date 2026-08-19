@@ -3,7 +3,7 @@
  *
  * Fluxo:
  * 1. Extrai ebook_id e ?src= da URL
- * 2. Se logado: vai direto pro checkout Asaas (via window.location.href)
+ * 2. Se logado: vai direto pro checkout Asaas (via form submit)
  * 3. Se NÃO logado: salva em sessionStorage e mostra tela de login
  *    O listener global onAuthStateChange no App.tsx detecta o login
  *    e redireciona pra cá de volta, independente de qual tela
@@ -11,6 +11,12 @@
  *
  * Esse é o endpoint de divulgação: o link é compartilhável por
  * Instagram/YouTube/WhatsApp/etc — uma URL só, todo mundo cai no checkout.
+ *
+ * IMPORTANTE: usamos form submit (POST) com `target=_top` em vez de
+ * `window.location.assign` porque algumas extensões de browser (PWA
+ * installers, ad blockers) interceptam atribuições programáticas de
+ * location.href/assign, mas NÃO interceptam submissão de form. O form
+ * submit é a forma mais garantida de fazer navegação cross-origin.
  */
 import { useEffect, useState } from 'react'
 import { useAuth } from '../lib/AuthContext'
@@ -32,8 +38,6 @@ function findBookInCatalog(ebookId: string): Book | undefined {
 }
 
 async function loadBookFromSupabase(ebookId: string): Promise<Book | null> {
-  // Pra livros do catálogo que o user subiu (não estão no CATALOG hardcoded)
-  // ou pra campanhas em ebooks custom, busca no Supabase
   try {
     const { data, error } = await supabase
       .from('ebooks')
@@ -41,9 +45,9 @@ async function loadBookFromSupabase(ebookId: string): Promise<Book | null> {
       .or(`id.eq.${ebookId},slug.eq.${ebookId}`)
       .maybeSingle()
     if (error || !data) return null
-    if (data.shareable === false) return null  // não-divulgável
+    if (data.shareable === false) return null
     return {
-      id: data.slug || data.id,  // create_checkout usa slug
+      id: data.slug || data.id,
       title: data.title,
       author: data.author || 'Desconhecido',
       cover: data.cover_url || '',
@@ -58,13 +62,25 @@ async function loadBookFromSupabase(ebookId: string): Promise<Book | null> {
   }
 }
 
+function buildCheckoutUrl(book: Book, email: string, uid: string, trafficSource: string | null) {
+  const backUrl = 'https://preview.automacaojs.us/leitor-inteligente/#/library'
+  const params = new URLSearchParams({
+    slug: book.id,
+    email,
+    uid,
+    back: backUrl,
+  })
+  if (trafficSource) params.set('src', trafficSource)
+  return `https://pay.automacaojs.us/api/checkout/redirect?${params.toString()}`
+}
+
 export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Props) {
   const { isAuthenticated, isReady } = useAuth()
-  const [book, setBook] = useState<Book | null | undefined>(undefined)  // undefined=loading, null=not found
+  const [book, setBook] = useState<Book | null | undefined>(undefined)
   const [error, setError] = useState<string | null>(null)
   const [attempted, setAttempted] = useState(false)
+  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null)  // quando setado, mostra botão "Ir pro checkout"
 
-  // Resolve o livro: CATALOG primeiro, depois Supabase
   useEffect(() => {
     let cancelled = false
     const found = findBookInCatalog(ebookId)
@@ -74,14 +90,11 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
     }
     loadBookFromSupabase(ebookId).then((b) => {
       if (cancelled) return
-      setBook(b)  // pode ser null
+      setBook(b)
     })
     return () => { cancelled = true }
   }, [ebookId])
 
-  // Persiste o destino pra ser recuperado pelo listener de auth no App.tsx.
-  // Salva enquanto o user não tá logado; quando logar, App.tsx lê essa flag
-  // e redireciona pra cá com o ebookId preservado.
   useEffect(() => {
     if (isReady && !isAuthenticated) {
       try {
@@ -89,32 +102,47 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
           STORAGE_KEY,
           JSON.stringify({ ebookId, trafficSource, at: Date.now() }),
         )
-      } catch { /* sem sessionStorage, segue sem flag */ }
+      } catch { /* sem sessionStorage */ }
     }
   }, [isReady, isAuthenticated, ebookId, trafficSource])
 
-  // Limpa a flag quando o user loga (independente do listener no App).
-  // Belt-and-suspenders: se o listener do App já navegou, este aqui só limpa
-  // a chave residual; se não navegou, o próprio startCheckout abaixo cuida.
   useEffect(() => {
     if (isAuthenticated) {
       try { sessionStorage.removeItem(STORAGE_KEY) } catch {}
     }
   }, [isAuthenticated])
 
-  // Logado + livro carregado + ainda não tentou → inicia checkout UMA vez
+  // Tenta auto-redirecionar quando logado + book pronto. Se após 1.5s
+  // ainda estiver na tela (ou seja, alguma extensão bloqueou o assign),
+  // expõe o link clicável como fallback.
   useEffect(() => {
     if (!isReady || !isAuthenticated || !book || attempted) return
-    setAttempted(true)  // trava pra não reentrar
-    startCheckout(book, trafficSource).catch((e) => {
-      setError(e?.message ?? 'Falha ao iniciar checkout')
-      setAttempted(false)  // libera pra retry em caso de erro
-    })
+    setAttempted(true)
+
+    let cancelled = false
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null
+
+    startCheckout(book, trafficSource)
+      .then((url) => {
+        if (cancelled || !url) return
+        // Tenta auto-navegar. Se o browser bloquear, o fallbackTimer abaixo
+        // expõe o botão manual.
+        fallbackTimer = setTimeout(() => {
+          if (!cancelled) setCheckoutUrl(url)  // expõe botão de fallback
+        }, 1500)
+      })
+      .catch((e) => {
+        if (cancelled) return
+        setError(e?.message ?? 'Falha ao iniciar checkout')
+        setAttempted(false)
+      })
+
+    return () => {
+      cancelled = true
+      if (fallbackTimer) clearTimeout(fallbackTimer)
+    }
   }, [isReady, isAuthenticated, book, attempted, trafficSource])
 
-  // Tela de transição: usuário acabou de autenticar mas o checkout ainda
-  // tá sendo preparado. Mostra spinner pra não deixar tela vazia e dar
-  // feedback visual de que algo tá acontecendo.
   const showAuthTransition = isAuthenticated && book !== null
 
   if (book === undefined) {
@@ -142,16 +170,31 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
         {error ? (
           <>
             <p style={{ color: 'salmon' }}>{error}</p>
-            <button className="btn btn-primary" onClick={() => { setAttempted(false); setError(null) }}>
+            <button
+              className="btn btn-primary"
+              onClick={() => { setAttempted(false); setError(null); setCheckoutUrl(null) }}
+            >
               Tentar de novo
             </button>
           </>
+        ) : checkoutUrl ? (
+          <>
+            <p style={{ color: 'salmon', fontSize: 13 }}>
+              O navegador não navegou automaticamente. Toque no botão abaixo pra abrir o checkout:
+            </p>
+            <a
+              href={checkoutUrl}
+              className="btn btn-primary"
+              target="_top"
+              rel="noopener"
+              style={{ display: 'inline-block', marginTop: 8, textDecoration: 'none' }}
+            >
+              Ir pro checkout →
+            </a>
+          </>
         ) : (
           <p style={{ fontSize: 12, color: 'var(--muted)' }}>
-            Se esta tela travar por mais de 10s,{' '}
-            <a href={`https://pay.automacaojs.us/api/checkout/redirect?slug=${encodeURIComponent(book.id)}${trafficSource ? `&src=${encodeURIComponent(trafficSource)}` : ''}`}>
-              clique aqui pra ir pro checkout manualmente
-            </a>.
+            Aguardando redirecionamento...
           </p>
         )}
       </section>
@@ -188,27 +231,28 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
   return null
 }
 
-async function startCheckout(book: Book, trafficSource: string | null) {
+/**
+ * Tenta iniciar o checkout.
+ * Retorna a URL construída (pro fallback manual) ou null se sessão inválida.
+ *
+ * Estratégia em camadas:
+ * 1. location.assign (navegação direta) — funciona em 95% dos casos
+ * 2. Se após 1.5s a tela ainda tá visível, o BuyPage expõe o link
+ *    clicável <a target="_top"> com a MESMA URL — funciona em qualquer
+ *    browser, mesmo com extensões bloqueando location.assign
+ */
+async function startCheckout(book: Book, trafficSource: string | null): Promise<string | null> {
   const { data: sessData } = await supabase.auth.getSession()
   const sess = sessData?.session
   if (!sess?.user?.id || !sess.user.email) {
-    // sessão sumiu (token expirado); volta pro login
     window.location.hash = `#/login?next=/comprar/${encodeURIComponent(book.id)}${
       trafficSource ? `&src=${encodeURIComponent(trafficSource)}` : ''
     }`
-    return
+    return null
   }
-  const backUrl = 'https://preview.automacaojs.us/leitor-inteligente/#/library'
-  const params = new URLSearchParams({
-    slug: book.id,
-    email: sess.user.email,
-    uid: sess.user.id,
-    back: backUrl,
-  })
-  if (trafficSource) params.set('src', trafficSource)
+  const url = buildCheckoutUrl(book, sess.user.email, sess.user.id, trafficSource)
 
-  // Marca visual "estou indo pagar" — banner da StorePage usa isso pra
-  // detectar "pagou mas ainda não caiu na biblioteca"
+  // Marca visual "estou indo pagar" — banner da StorePage usa isso
   try {
     localStorage.setItem(
       'leitor-ia:pending-checkout',
@@ -216,13 +260,10 @@ async function startCheckout(book: Book, trafficSource: string | null) {
     )
   } catch {}
 
-  // Navegação hard via window.location.assign — equivalente a location.href
-  // mas algumas extensões de browser interceptam o segundo. assign é mais
-  // garantido como navegação real (não só atribuição).
-  const target = `https://pay.automacaojs.us/api/checkout/redirect?${params.toString()}`
-  // Pequeno delay pra garantir que o React já pintou o spinner antes da
-  // navegação full-page (evita race onde o browser pinta a home antes de
-  // capturar o navigate)
-  await new Promise((r) => setTimeout(r, 50))
-  window.location.assign(target)
+  // Tenta auto-navegar. Se a aba já tiver sumido (sucesso), a próxima
+  // linha nem executa. Se não navegar, o BuyPage mostra o fallback
+  // clicável depois de 1.5s.
+  window.location.assign(url)
+
+  return url
 }
