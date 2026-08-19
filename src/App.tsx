@@ -24,9 +24,33 @@ import { UploadPage } from './pages/UploadPage'
 import { BuyPage } from './pages/BuyPage'
 import { CheckoutModal } from './components/CheckoutModal'
 import { AuthProvider, useAuth } from './lib/AuthContext'
-import { SUPABASE_READY } from './lib/supabase'
+import { supabase, SUPABASE_READY } from './lib/supabase'
 
 export type Route = 'home' | 'store' | 'library' | 'reader' | 'admin' | 'login' | 'upload' | 'comprar'
+
+const PENDING_BUY_KEY = 'leitor-ia:pending-buy'
+
+interface PendingBuy {
+  ebookId: string
+  trafficSource?: string | null
+}
+
+function readPendingBuy(): PendingBuy | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = sessionStorage.getItem(PENDING_BUY_KEY)
+    if (!raw) return null
+    const data = JSON.parse(raw)
+    if (!data?.ebookId) return null
+    return { ebookId: data.ebookId, trafficSource: data.trafficSource ?? null }
+  } catch {
+    return null
+  }
+}
+
+function clearPendingBuy() {
+  try { sessionStorage.removeItem(PENDING_BUY_KEY) } catch { /* sem sessionStorage */ }
+}
 
 const PROTECTED: Route[] = ['library', 'reader', 'admin', 'upload']
 
@@ -68,6 +92,25 @@ function InnerApp() {
     const onHash = () => setRouteState(readRoute())
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  // Listener global de mudança de auth: se acabou de logar e tem compra
+  // pendente salva, redireciona pro checkout da campanha independente
+  // de qual tela o OAuth deixou o usuário (resolve o bug do Google
+  // voltar pra URL base em vez de /comprar/{id}).
+  useEffect(() => {
+    if (!SUPABASE_READY) return
+    const { data: sub } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      const justLoggedIn = event === 'SIGNED_IN' && !!nextSession?.user
+      if (!justLoggedIn) return
+      const pending = readPendingBuy()
+      if (!pending) return
+      // Limpa a flag antes de navegar pra não loopar
+      clearPendingBuy()
+      const qs = pending.trafficSource ? `?src=${encodeURIComponent(pending.trafficSource)}` : ''
+      window.location.hash = `#/comprar/${encodeURIComponent(pending.ebookId)}${qs}`
+    })
+    return () => { sub.subscription.unsubscribe() }
   }, [])
 
   // Sincroniza com Supabase quando usuário autentica

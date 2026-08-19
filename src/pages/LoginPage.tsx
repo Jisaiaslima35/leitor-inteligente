@@ -21,6 +21,9 @@ function GoogleIcon() {
 }
 
 export function LoginPage({ onBack, onSuccess }: Props) {
+  // O redirecionamento pós-login pra campanhas (/comprar/{id}) é feito
+  // pelo listener onAuthStateChange no App.tsx — não precisa tratar aqui.
+  // Esta página só cuida do formulário de autenticação.
   const { signInWithMagicLink, signInWithPassword, signUpWithPassword, signInWithGoogle, isAuthenticated } = useAuth()
   const [mode, setMode] = useState<Mode>('magic')
   const [email, setEmail] = useState('')
@@ -30,52 +33,14 @@ export function LoginPage({ onBack, onSuccess }: Props) {
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
 
-  // Detecta se essa tela foi aberta como destino de uma campanha
-  // (ex: usuário clicou em /comprar/{id}?src=instagram deslogado).
-  // Lê também o fallback do sessionStorage que a BuyPage setou.
-  const campaignNext = (() => {
-    if (typeof window === 'undefined') return null
-    // 1. Query param ?next=/comprar/{id}&src=...
-    const hash = window.location.hash.replace('#/', '')
-    const queryIdx = hash.indexOf('?')
-    if (queryIdx > 0) {
-      const params = new URLSearchParams(hash.slice(queryIdx + 1))
-      const next = params.get('next')
-      if (next && next.startsWith('/comprar/')) {
-        return {
-          target: next,
-          src: params.get('src') || null,
-        }
-      }
-    }
-    // 2. sessionStorage (BuyPage salvou antes do redirect)
-    try {
-      const raw = sessionStorage.getItem('leitor-ia:pending-buy')
-      if (raw) {
-        const data = JSON.parse(raw)
-        if (data?.ebookId) {
-          return {
-            target: `/comprar/${encodeURIComponent(data.ebookId)}`,
-            src: data.trafficSource || null,
-          }
-        }
-      }
-    } catch {}
-    return null
-  })()
-
-  // Redireciona automaticamente quando autentica com sucesso
+  // Se o user JÁ tava logado quando essa rota abriu (sem contexto de campanha),
+  // e o pai passou `onSuccess`, navega. Esse efeito não roda em campanhas,
+  // porque o App.tsx já redirecionou via hash antes mesmo de mostrar essa tela.
   useEffect(() => {
-    if (!isAuthenticated) return
-    if (campaignNext) {
-      // Limpa a flag pra não re-aplicar em login futuro
-      try { sessionStorage.removeItem('leitor-ia:pending-buy') } catch {}
-      const target = `#${campaignNext.target}${campaignNext.src ? `?src=${encodeURIComponent(campaignNext.src)}` : ''}`
-      window.location.hash = target
-    } else if (onSuccess) {
+    if (isAuthenticated && onSuccess) {
       onSuccess()
     }
-  }, [isAuthenticated, campaignNext, onSuccess])
+  }, [isAuthenticated, onSuccess])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

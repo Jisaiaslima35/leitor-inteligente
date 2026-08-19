@@ -4,8 +4,10 @@
  * Fluxo:
  * 1. Extrai ebook_id e ?src= da URL
  * 2. Se logado: vai direto pro checkout Asaas
- * 3. Se NÃO logado: salva em sessionStorage e redireciona pro login
- *    com `?next=/comprar/{ebook_id}` (LoginPage cuida do redirect pós-auth)
+ * 3. Se NÃO logado: salva em sessionStorage e mostra tela de login
+ *    O listener global onAuthStateChange no App.tsx detecta o login
+ *    e redireciona pra cá de volta, independente de qual tela
+ *    o OAuth deixou o usuário.
  *
  * Esse é o endpoint de divulgação: o link é compartilhável por
  * Instagram/YouTube/WhatsApp/etc — uma URL só, todo mundo cai no checkout.
@@ -76,7 +78,9 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
     return () => { cancelled = true }
   }, [ebookId])
 
-  // Persiste o destino pro LoginPage usar pós-auth
+  // Persiste o destino pra ser recuperado pelo listener de auth no App.tsx.
+  // Salva enquanto o user não tá logado; quando logar, App.tsx lê essa flag
+  // e redireciona pra cá com o ebookId preservado.
   useEffect(() => {
     if (isReady && !isAuthenticated) {
       try {
@@ -88,11 +92,25 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
     }
   }, [isReady, isAuthenticated, ebookId, trafficSource])
 
+  // Limpa a flag quando o user loga (independente do listener no App).
+  // Belt-and-suspenders: se o listener do App já navegou, este aqui só limpa
+  // a chave residual; se não navegou, o próprio startCheckout abaixo cuida.
+  useEffect(() => {
+    if (isAuthenticated) {
+      try { sessionStorage.removeItem(STORAGE_KEY) } catch {}
+    }
+  }, [isAuthenticated])
+
   // Logado + livro carregado → inicia checkout
   useEffect(() => {
     if (!isReady || !isAuthenticated || !book) return
     startCheckout(book, trafficSource)
   }, [isReady, isAuthenticated, book, trafficSource])
+
+  // Tela de transição: usuário acabou de autenticar mas o checkout ainda
+  // tá sendo preparado. Mostra spinner pra não deixar tela vazia e dar
+  // feedback visual de que algo tá acontecendo.
+  const showAuthTransition = isAuthenticated && book !== null
 
   if (book === undefined) {
     return <div className="buy-loading"><p>Carregando livro...</p></div>
@@ -108,13 +126,25 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
       </section>
     )
   }
+  if (showAuthTransition) {
+    return (
+      <section className="buy-checkout-transition">
+        <div className="spinner" aria-label="Carregando" />
+        <h2>Preparando seu checkout...</h2>
+        <p style={{ color: 'var(--muted)' }}>
+          Você será redirecionado pro pagamento de <strong>{book.title}</strong> (R$ {(book.price / 100).toFixed(2)}).
+        </p>
+        {error && <p style={{ color: 'salmon' }}>{error}</p>}
+      </section>
+    )
+  }
   if (!isAuthenticated) {
     return (
       <section className="buy-redirect">
         <h2>🔐 Login necessário</h2>
         <p style={{ color: 'var(--muted)' }}>
           Pra comprar <strong>{book.title}</strong>, faça login com Google.
-          Você volta automaticamente pra cá.
+          Você volta automaticamente pro checkout.
         </p>
         <button
           className="btn btn-primary"
@@ -136,15 +166,7 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
     )
   }
 
-  return (
-    <section className="buy-checkout">
-      <h2>Preparando checkout...</h2>
-      <p style={{ color: 'var(--muted)' }}>
-        Você será redirecionado pro pagamento de <strong>{book.title}</strong> (R$ {(book.price / 100).toFixed(2)}).
-      </p>
-      {error && <p style={{ color: 'salmon' }}>{error}</p>}
-    </section>
-  )
+  return null
 }
 
 async function startCheckout(book: Book, trafficSource: string | null) {
@@ -173,8 +195,6 @@ async function startCheckout(book: Book, trafficSource: string | null) {
       JSON.stringify({ bookId: book.id, bookTitle: book.title, at: Date.now() }),
     )
   } catch {}
-  // Limpa a flag de pending-buy
-  try { sessionStorage.removeItem(STORAGE_KEY) } catch {}
 
   // Navegação GET (mais robusto em mobile que fetch + location.href)
   window.location.href = `https://pay.automacaojs.us/api/checkout/redirect?${params.toString()}`
