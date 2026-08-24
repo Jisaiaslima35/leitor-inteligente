@@ -903,9 +903,16 @@ class Handler(BaseHTTPRequestHandler):
                 price_cents = int(fields.get('price_cents', '0') or 0)
                 is_published = fields.get('is_published', 'true').lower() in ('1', 'true', 'yes', 'on')
                 author = 'Admin Isaías'
-                # 23/08/2026: categoria vem do form. Whitelist estrita pra evitar lixo.
+                # 24/08/2026 (P4 Isaías): categoria é OBRIGATÓRIA. Whitelist
+                # reduzida pra 2 valores. Sem categoria válida → 400, livro
+                # NÃO SOBE. Schema Supabase tem CHECK constraint casada.
+                ALLOWED_CATS = {'comum', 'programacao'}
                 _cat_raw = (fields.get('categoria', '') or '').strip().lower()
-                categoria = _cat_raw if _cat_raw in {'programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros'} else 'programacao'
+                if not _cat_raw:
+                    return self.send_json(400, {'error': 'Categoria é obrigatória. Escolha "comum" (livro comum) ou "programacao" (Tecnologia/Programação).'})
+                if _cat_raw not in ALLOWED_CATS:
+                    return self.send_json(400, {'error': f'Categoria inválida: {_cat_raw!r}. Use: comum ou programacao.'})
+                categoria = _cat_raw
 
                 # 3. Salva PDF num path admin-only (storage_path = admin/admin_livro_{ts}.pdf)
                 ts = int(time.time())
@@ -1052,11 +1059,12 @@ class Handler(BaseHTTPRequestHandler):
                 # Campos opcionais — só atualiza o que vier (PUT parcial)
                 allowed = {'title', 'slug', 'author', 'price_cents', 'is_published', 'shareable', 'categoria'}
                 update = {k: v for k, v in data.items() if k in allowed and v is not None}
-                # 23/08/2026: whitelist estrita pra categoria — evita lixo no DB
+                # 24/08/2026 (P4 Isaías): whitelist reduzida pra 2 valores + NÃO
+                # aceita string vazia (categoria é obrigatória).
                 if 'categoria' in update:
                     cat = str(update['categoria']).strip().lower()
-                    if cat not in {'programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros'}:
-                        return self.send_json(400, {'error': f'categoria inválida: {cat!r}. Use: programacao, tecnologia, gospel, literatura, autoajuda, outros.'})
+                    if cat not in {'comum', 'programacao'}:
+                        return self.send_json(400, {'error': f'categoria inválida: {cat!r}. Use: comum ou programacao.'})
                     update['categoria'] = cat
                 if 'price_cents' in update:
                     update['price_cents'] = max(0, int(update['price_cents']))

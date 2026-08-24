@@ -49,26 +49,20 @@ export interface Book {
   categoria: Categoria
 }
 
-/** Categorias oficiais do Leitor. Default no Supabase: 'outros'
- *  (admin tem que marcar explicitamente como 'programacao' pra
- *  habilitar Sala Dev). */
+/** Categorias oficiais do Leitor.
+ *  24/08/2026 (P4 Isaías): reduzido pra 2 categorias. Todo upload é
+ *  OBRIGATÓRIO escolher uma das duas — sem default silencioso no
+ *  backend (retorna 400). Schema Supabase: CHECK constraint + NOT NULL.
+ *    comum       → livro comum (ficção, gospel, autoajuda, etc)
+ *    programacao → livro de Tecnologia ou Programação (Sala Dev ON)
+ */
 export type Categoria =
-  | 'programacao'   // Sala Dev habilitada
-  | 'tecnologia'    // futuro: tech geral, sem playground de código
-  | 'gospel'
-  | 'literatura'
-  | 'autoajuda'
-  | 'outros'
+  | 'comum'         // livro comum — sem Área Dev
+  | 'programacao'   // Tecnologia ou Programação — Sala Dev habilitada
 
-export const CATEGORIAS: Categoria[] = [
-  'programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros',
-]
+export const CATEGORIAS: Categoria[] = ['comum', 'programacao']
 
 export const CATEGORIA_LABEL: Record<Categoria, string> = {
-  programacao: 'Programação',
-  tecnologia: 'Tecnologia (geral)',
-  gospel: 'Gospel / Religioso',
-  literatura: 'Literatura',
-  autoajuda: 'Autoajuda',
-  outros: 'Outros',
+  comum: 'Livro comum',
+  programacao: 'Livro de Tecnologia ou programação',
 }

@@ -78,6 +78,11 @@ LANG_MAP = {
     'js':         ('javascript', '20.11.1'),
     'node':       ('javascript', '20.11.1'),
     'php':        ('php', '8.2.3'),
+    # 24/08/2026 (P5 Isaías): SQL e Java adicionados. Piston via
+    # POST /api/v2/packages instalou sqlite3 3.36.0 e java 15.0.2.
+    'sql':        ('sqlite3', '3.36.0'),
+    'sqlite':     ('sqlite3', '3.36.0'),
+    'java':       ('java', '15.0.2'),
 }
 
 # ─── Supabase (carrega de /root/.hermes/secrets/leitor-supabase.env) ─────

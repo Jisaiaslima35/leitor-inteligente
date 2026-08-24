@@ -82,7 +82,7 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
   const [uploadSlug, setUploadSlug] = useState('')
   const [uploadPrice, setUploadPrice] = useState('990')
   const [uploadPublishing, setUploadPublishing] = useState(true)
-  const [uploadCategoria, setUploadCategoria] = useState<Categoria>('programacao')
+  const [uploadCategoria, setUploadCategoria] = useState<Categoria>('comum')
   const [uploadBusy, setUploadBusy] = useState(false)
   const [uploadMsg, setUploadMsg] = useState<string | null>(null)
 
@@ -476,11 +476,12 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
                   <small>Publicar imediatamente (aparece em Loja/Início)</small>
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <small>Categoria (23/08: controla se Sala Dev aparece)</small>
+                  <small>Categoria * <span style={{ color: 'var(--text-secondary)' }}>(obrigatório — controla se Sala Dev aparece)</span></small>
                   <select
                     value={uploadCategoria}
                     onChange={(e) => setUploadCategoria(e.target.value as Categoria)}
                     disabled={uploadBusy}
+                    required
                     style={{ padding: 8, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)' }}
                   >
                     {CATEGORIAS.map(c => (
@@ -738,10 +739,11 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
                 <small>Compartilhável (link de campanha funciona)</small>
               </label>
               <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <small>Categoria (Sala Dev só abre se for Programação)</small>
+                <small>Categoria * (Sala Dev só abre se for "Tecnologia ou programação")</small>
                 <select
                   value={editCategoria}
                   onChange={(e) => setEditCategoria(e.target.value as Categoria)}
+                  required
                   style={{ padding: 8, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)' }}
                 >
                   {CATEGORIAS.map(c => (

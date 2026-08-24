@@ -56,7 +56,7 @@ async function fetchJson(url: string, init: RequestInit, timeoutMs: number) {
   }
 }
 
-type Lang = 'python' | 'javascript' | 'php'
+type Lang = 'python' | 'javascript' | 'php' | 'sql' | 'java'
 
 interface ExecResult {
   stdout: string
@@ -98,12 +98,18 @@ const STARTERS: Record<Lang, string> = {
   python: '# Bem-vindo à Sala Dev do Leitor!\nprint("oi dev")\nprint(2 + 2)\n',
   javascript: '// Bem-vindo à Sala Dev do Leitor!\nconsole.log("oi dev");\nconsole.log([1, 2, 3].reduce((a, b) => a + b));\n',
   php: '<?php\n// Bem-vindo à Sala Dev do Leitor!\necho "oi dev\\n";\necho 10 * 5;\n',
+  // 24/08/2026 (P5): SQL e Java habilitados no Piston via POST /api/v2/packages
+  // (sqlite3 3.36.0 e java 15.0.2). Backend LANG_MAP tem que casar.
+  sql: '-- Bem-vindo à Sala Dev do Leitor!\nSELECT \'oi dev\' AS msg, 2 + 2 AS soma;\n',
+  java: '// Bem-vindo à Sala Dev do Leitor!\npublic class Main {\n  public static void main(String[] args) {\n    System.out.println("oi dev");\n    System.out.println(10 * 5);\n  }\n}\n',
 }
 
 const LANG_LABEL: Record<Lang, string> = {
   python: 'Python 3.11',
   javascript: 'JavaScript (Node 20)',
   php: 'PHP 8.2',
+  sql: 'SQL (SQLite 3)',
+  java: 'Java 15',
 }
 
 const MAX_CODE_CHARS = 5000
@@ -614,6 +620,8 @@ export function DevPage({ book, onBack }: DevPageProps) {
             <option value="python">{LANG_LABEL.python}</option>
             <option value="javascript">{LANG_LABEL.javascript}</option>
             <option value="php">{LANG_LABEL.php}</option>
+            <option value="sql">{LANG_LABEL.sql}</option>
+            <option value="java">{LANG_LABEL.java}</option>
           </select>
         </label>
         <label className="dev-mode-toggle" title="Modo terminal: input() roda em tempo real (WebSocket). Modo clássico: roda e devolve output">
