@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Book } from './domain/types'
+import type { Book, Categoria } from './domain/types'
 import {
   buyBookRemote,
   fetchRemoteLibrary,
@@ -169,7 +169,9 @@ function InnerApp() {
       // Supabase (mesma defesa do catalogSupabase.ts). Se vier NULL ou
       // inválido, cai pra 'outros' e o botão Área Dev se esconde.
       const CATEGORIAS_VALIDAS = new Set(['programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros'])
-      const cat = row.categoria && CATEGORIAS_VALIDAS.has(row.categoria) ? row.categoria : 'outros'
+      const cat: Categoria = row.categoria && CATEGORIAS_VALIDAS.has(row.categoria)
+        ? (row.categoria as Categoria)
+        : 'outros'
       const virtual: Book = {
         id: bookId,
         title: row.title,

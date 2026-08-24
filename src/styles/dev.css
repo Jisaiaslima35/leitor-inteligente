@@ -440,14 +440,68 @@
 }
 .dev-mentor-err h4 { color: #fca5a5; }
 
-/* Botão Área Dev dentro da toolbar do PDF */
+/* Botão Área Dev dentro da toolbar do PDF
+   P7.10 — 24/08/2026: redesign pra ficar moderno e destacado.
+   Antes: dourado transparente (#d4af37 com alpha 0.12) — sumia na toolbar.
+   Agora: gradiente sólido âmbar + glow suave + tipografia mais pesada,
+   pra competir visualmente com os outros botões da barra. */
 .pdf-toolbar-dev {
-  background: rgba(212, 175, 55, 0.12) !important;
-  border: 1px solid rgba(212, 175, 55, 0.35) !important;
-  color: #d4af37 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  padding: 7px 14px !important;
+  border-radius: 10px !important;
+  background: linear-gradient(135deg, #d4af37 0%, #b8941f 100%) !important;
+  border: 1px solid rgba(255, 220, 120, 0.45) !important;
+  color: #1a1500 !important;
+  font-weight: 700 !important;
+  font-size: 0.85rem !important;
+  letter-spacing: 0.01em !important;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.15) !important;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 0 0 0 rgba(212, 175, 55, 0) !important;
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.18s ease,
+    background 0.18s ease,
+    color 0.18s ease !important;
+}
+.pdf-toolbar-dev svg {
+  color: #1a1500 !important;
+  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.2));
 }
 .pdf-toolbar-dev:hover {
-  background: rgba(212, 175, 55, 0.22) !important;
+  background: linear-gradient(135deg, #e8c64a 0%, #c89f24 100%) !important;
+  color: #0d0a00 !important;
+  transform: translateY(-1px);
+  box-shadow:
+    0 4px 12px rgba(212, 175, 55, 0.35),
+    0 0 0 3px rgba(212, 175, 55, 0.18) !important;
+}
+.pdf-toolbar-dev:hover svg {
+  color: #0d0a00 !important;
+}
+.pdf-toolbar-dev:active {
+  transform: translateY(0);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 0 0 2px rgba(212, 175, 55, 0.25) !important;
+}
+.pdf-toolbar-dev:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 3px rgba(212, 175, 55, 0.45) !important;
+}
+
+/* Mobile: mantém o destaque mas com tamanho um pouco menor */
+@media (max-width: 720px) {
+  .pdf-toolbar-dev {
+    padding: 6px 11px !important;
+    font-size: 0.78rem !important;
+    gap: 5px !important;
+  }
 }
 
 /* 23/08/2026: tela de bloqueio quando o usuário tenta abrir /dev/<slug>

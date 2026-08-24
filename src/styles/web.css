@@ -1,0 +1,257 @@
+/* web.css — Modo "Projeto Web" (Sandpack) — Lei tor Inteligente (P7)
+   ISAÍAS: 24/08/2026. Tema dark consistente com o dev.css. */
+
+/* ─── Container raiz ────────────────────────────────────────────────── */
+.web-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.web-mode-loading,
+.web-mode-empty,
+.web-mode-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 60px 20px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  color: var(--muted);
+  text-align: center;
+}
+.web-mode-error { color: #fca5a5; border-color: #dc2626; }
+
+/* ─── Tabs mobile ───────────────────────────────────────────────────── */
+.web-mobile-tabs {
+  display: none;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-elev);
+}
+.web-tab {
+  flex: 1;
+  padding: 12px;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.web-tab.is-active {
+  background: var(--brand);
+  color: #fff;
+}
+.web-tab:not(.is-active):hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+/* ─── Sandpack layout split ─────────────────────────────────────────── */
+.web-sandpack {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--bg-elev);
+  min-height: 480px;
+}
+.web-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.web-pane-editor {
+  border-right: 1px solid var(--line);
+}
+.web-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  min-height: 36px;
+}
+.web-pane-preview {
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.web-pane-preview .web-pane-header {
+  color: #333;
+  background: #f8f8f8;
+  border-bottom: 1px solid #e5e5e5;
+}
+
+/* ─── P7.9 — 24/08/2026: iframe do Sandpack ocupando 100% do painel ──
+   Isaías testou e viu que o iframe ficava pequeno no canto superior
+   do preview, deixando um vão em branco embaixo + scroll interno
+   desnecessário. Forçamos a hierarquia inteira do Sandpack (.sp-*)
+   a herdar 100% da altura do .web-pane-preview, mantendo o min-height
+   confortável pra não achatar demais em telas pequenas. */
+.sp-preview,
+.sp-preview-container,
+.sp-preview-iframe {
+  height: 100% !important;
+  min-height: 420px;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+.sp-preview-iframe {
+  width: 100%;
+  border: 0;
+  background: #ffffff;
+}
+.web-save-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.web-save-status svg { animation: spin 1s linear infinite; }
+
+/* ─── Tabs customizadas do editor (P7.8) ────────────────────────────
+   Substituem o showTabs interno do SandpackCodeEditor (que travava).
+   Sandpack mantém activeFile interno; mudamos via setActiveFile(path). */
+.web-tabs {
+  display: flex;
+  gap: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  padding: 0 4px;
+}
+.web-tab-btn {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  user-select: none;
+}
+.web-tab-btn:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.04);
+}
+.web-tab-btn.is-active {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+  background: rgba(34, 197, 94, 0.05);
+}
+
+/* ─── Botão custom de refresh do preview (P7.8) ──────────────────────
+   Substitui o showRefreshButton interno do SandpackPreview (que não
+   disparava reload). Chama sandpack.refreshBrowser(). */
+.web-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.web-refresh-btn:hover {
+  background: var(--brand);
+  color: #fff;
+  border-color: var(--brand);
+}
+.web-refresh-btn:active {
+  transform: scale(0.97);
+}
+
+/* ─── Mentor bubble (mesmo padrão do modo clássico) ─────────────────── */
+.web-mentor-cta {
+  padding: 14px 0;
+}
+.web-mentor-btn {
+  width: 100%;
+  padding: 14px;
+  font-size: 1rem;
+}
+.web-mentor-bubble {
+  background: linear-gradient(135deg, var(--bg-elev) 0%, var(--bg) 100%);
+  border: 1px solid var(--brand);
+  border-radius: 14px;
+  padding: 16px;
+}
+.web-mentor-bubble h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+  color: var(--brand);
+}
+.web-mentor-bubble p {
+  margin: 0;
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+.web-mentor-loading p { color: var(--muted); }
+.web-mentor-loading svg { animation: spin 1s linear infinite; vertical-align: middle; margin-right: 4px; }
+.web-mentor-err { border-color: #dc2626; }
+.web-mentor-err p { color: #fca5a5; margin-bottom: 10px; }
+
+/* ─── Mobile (<= 720px) ─────────────────────────────────────────────── */
+@media (max-width: 720px) {
+  .web-mobile-tabs {
+    display: flex;
+  }
+  .web-sandpack {
+    grid-template-columns: 1fr;
+    min-height: 600px;
+  }
+  .web-sandpack .web-pane {
+    display: none;
+  }
+  .web-sandpack.show-code .web-pane-editor { display: flex; }
+  .web-sandpack.show-preview .web-pane-preview { display: flex; }
+  .web-pane-editor {
+    border-right: 0;
+    border-bottom: 0;
+  }
+  .web-pane-header { font-size: 0.8rem; padding: 6px 10px; }
+  /* P7.8: tabs do editor mais compactas no celular */
+  .web-tab-btn { padding: 6px 10px; font-size: 0.72rem; }
+  .web-refresh-btn { padding: 3px 8px; font-size: 0.7rem; }
+  /* P7.9: preview mobile com mesma altura confortável que o editor */
+  .web-sandpack.show-preview {
+    min-height: 480px;
+  }
+  .web-sandpack.show-preview .sp-preview,
+  .web-sandpack.show-preview .sp-preview-container,
+  .web-sandpack.show-preview .sp-preview-iframe {
+    min-height: 440px;
+  }
+}

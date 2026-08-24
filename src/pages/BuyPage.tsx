@@ -65,6 +65,7 @@ async function loadBookFromSupabase(ebookId: string): Promise<Book | null> {
       totalPages: 0,
       highlights: [],
       chunks: [],
+      categoria: 'outros',
     }
   } catch {
     return null
