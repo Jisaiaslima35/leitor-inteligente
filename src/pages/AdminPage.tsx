@@ -7,6 +7,7 @@ import { ownsBook } from '../domain/library'
 import { getProgress } from '../domain/progress'
 import { supabase, SUPABASE_READY } from '../lib/supabase'
 import { CampaignLinkButton } from '../components/CampaignLinkButton'
+import { CategoriaRadioGroup, isCategoriaValida } from '../components/CategoriaRadioGroup'
 import { ADMIN_USER_ID, isAdminUser } from '../lib/admin'
 
 const ADMIN_TOKEN = 'admin-bypass-leitor-2026'
@@ -82,7 +83,7 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
   const [uploadSlug, setUploadSlug] = useState('')
   const [uploadPrice, setUploadPrice] = useState('990')
   const [uploadPublishing, setUploadPublishing] = useState(true)
-  const [uploadCategoria, setUploadCategoria] = useState<Categoria>('programacao')
+  const [uploadCategoria, setUploadCategoria] = useState<Categoria | ''>('')
   const [uploadBusy, setUploadBusy] = useState(false)
   const [uploadMsg, setUploadMsg] = useState<string | null>(null)
 
@@ -278,6 +279,13 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
     }
     if (!uploadFile || !uploadTitle || !uploadSlug) {
       setUploadMsg('❌ Preencha arquivo, título e slug.')
+      return
+    }
+    // P8 (24/08/2026): categoria obrigatória — radio group inicia vazio,
+    // então aqui forçamos escolha consciente.
+    if (!uploadCategoria) {
+      alert('Escolha a categoria do livro antes de subir.')
+      setUploadMsg('❌ Categoria não selecionada.')
       return
     }
     setUploadBusy(true)
@@ -476,17 +484,12 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
                   <small>Publicar imediatamente (aparece em Loja/Início)</small>
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <small>Categoria (23/08: controla se Sala Dev aparece)</small>
-                  <select
+                  <CategoriaRadioGroup
                     value={uploadCategoria}
-                    onChange={(e) => setUploadCategoria(e.target.value as Categoria)}
+                    onChange={(v) => setUploadCategoria(v)}
                     disabled={uploadBusy}
-                    style={{ padding: 8, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)' }}
-                  >
-                    {CATEGORIAS.map(c => (
-                      <option key={c} value={c}>{CATEGORIA_LABEL[c]}</option>
-                    ))}
-                  </select>
+                    label="Categoria (23/08: controla se Sala Dev aparece) — escolha obrigatória"
+                  />
                 </label>
                 <button type="submit" className="btn btn-primary" disabled={uploadBusy}>
                   {uploadBusy ? 'Enviando…' : 'Subir e publicar'}
@@ -738,16 +741,12 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
                 <small>Compartilhável (link de campanha funciona)</small>
               </label>
               <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <small>Categoria (Sala Dev só abre se for Programação)</small>
-                <select
+                <CategoriaRadioGroup
                   value={editCategoria}
-                  onChange={(e) => setEditCategoria(e.target.value as Categoria)}
-                  style={{ padding: 8, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)' }}
-                >
-                  {CATEGORIAS.map(c => (
-                    <option key={c} value={c}>{CATEGORIA_LABEL[c]}</option>
-                  ))}
-                </select>
+                  onChange={(v) => setEditCategoria(v || 'outros')}
+                  label="Categoria (Sala Dev só abre se for Programação)"
+                  compact
+                />
               </label>
             </div>
             <div style={{ display: 'flex', gap: 8, marginTop: 20, justifyContent: 'flex-end' }}>

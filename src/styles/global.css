@@ -713,3 +713,116 @@ input, textarea { font: inherit; color: inherit; }
 .upload-status .spinner { width: 32px; height: 32px; border: 3px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: spin 0.8s linear infinite; }
 
 .my-book-badge { display: inline-block; margin-left: 8px; padding: 2px 8px; background: var(--brand); color: white; border-radius: 999px; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.04em; vertical-align: middle; }
+
+/* ─── CategoriaRadioGroup (P8 — 24/08/2026) ────────────────────────────
+   Radio buttons verticais (ou horizontais opcionais) com bolinha custom
+   em dourado brand. Substitui o <select> antigo pra forçar escolha
+   consciente (state inicial = '' mostra alerta se não marcar). */
+.categoria-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.categoria-radio-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  margin-bottom: 2px;
+}
+.categoria-radio-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.categoria-radio-group.is-horizontal .categoria-radio-options {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.categoria-radio-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  user-select: none;
+}
+.categoria-radio-group.is-compact .categoria-radio-option {
+  padding: 6px 12px;
+  font-size: 0.9rem;
+}
+.categoria-radio-option:hover {
+  border-color: var(--brand);
+  background: var(--bg-elev);
+}
+.categoria-radio-option.is-checked {
+  border-color: var(--brand);
+  background: rgba(212, 175, 55, 0.08);
+  color: var(--ink);
+}
+.categoria-radio-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  width: 0;
+  height: 0;
+}
+.categoria-radio-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  background: transparent;
+  flex: 0 0 auto;
+  position: relative;
+  transition: border-color 0.15s, background 0.15s;
+}
+.categoria-radio-option.is-checked .categoria-radio-dot {
+  border-color: var(--brand);
+}
+.categoria-radio-option.is-checked .categoria-radio-dot::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--brand);
+  transform: translate(-50%, -50%);
+}
+.categoria-radio-input:focus-visible + .categoria-radio-dot {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+}
+.categoria-radio-input:disabled + .categoria-radio-dot {
+  opacity: 0.5;
+}
+.categoria-radio-text {
+  font-size: 0.92rem;
+  font-weight: 500;
+}
+.categoria-radio-option:has(.categoria-radio-input:disabled) {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.categoria-radio-hint {
+  font-size: 0.78rem;
+  color: var(--muted);
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 8px 12px;
+  line-height: 1.5;
+}
+.categoria-radio-hint strong {
+  color: var(--ink-soft);
+}
+.categoria-radio-hint em {
+  color: var(--brand);
+  font-style: normal;
+  font-weight: 600;
+}

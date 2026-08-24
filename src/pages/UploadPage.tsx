@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Upload, CheckCircle, AlertCircle, FileText, ArrowLeft, CreditCard } from 'lucide-react'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
+import { CategoriaRadioGroup, type CategoriaValue } from '../components/CategoriaRadioGroup'
 
 type Status = 'idle' | 'uploading' | 'processing' | 'done' | 'error'
 type AccessStatus = 'loading' | 'paid' | 'unpaid' | 'awaiting_confirmation'
@@ -25,6 +26,8 @@ export function UploadPage({ onBack, onSuccess }: Props) {
   const [ebookId, setEbookId] = useState<string | null>(null)
   const [pdfPageCount, setPdfPageCount] = useState<number | null>(null)
   const [etaMinutes, setEtaMinutes] = useState<number>(2)
+  // P8: categoria obrigatória — radio group inicia vazio, user precisa escolher.
+  const [categoria, setCategoria] = useState<CategoriaValue>('')
 
   // === Controle de acesso (pagamento de upload_fee) ===
   const [access, setAccess] = useState<AccessStatus>('loading')
@@ -172,6 +175,11 @@ export function UploadPage({ onBack, onSuccess }: Props) {
       setErrorMsg('Selecione um PDF')
       return
     }
+    // P8: categoria obrigatória antes do upload
+    if (!categoria) {
+      setErrorMsg('Escolha a categoria do livro antes de enviar.')
+      return
+    }
     setStatus('uploading')
     setProgress(0)
     setErrorMsg(null)
@@ -218,6 +226,8 @@ export function UploadPage({ onBack, onSuccess }: Props) {
           title: finalTitle,
           author: finalAuthor,
           total_pages: pdfPageCount || 0,
+          // P8: envia categoria escolhida (já validada acima)
+          categoria,
         }),
       })
       if (!procRes.ok) throw new Error(`Processamento falhou: ${await procRes.text()}`)
@@ -359,6 +369,16 @@ export function UploadPage({ onBack, onSuccess }: Props) {
                   placeholder="Ex: Eu mesmo"
                 />
               </label>
+
+              {/* P8: radio group de categoria — obrigatória antes do envio */}
+              <div className="field">
+                <CategoriaRadioGroup
+                  value={categoria}
+                  onChange={setCategoria}
+                  label="Categoria do livro (escolha obrigatória)"
+                  compact
+                />
+              </div>
 
               {errorMsg && (
                 <div className="auth-msg auth-msg-err">

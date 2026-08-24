@@ -784,6 +784,18 @@ class Handler(BaseHTTPRequestHandler):
                 author = (data.get('author') or 'Desconhecido').strip()
                 total_pages = int(data.get('total_pages') or 0)
 
+                # 24/08/2026 (P8): categoria vem do body com whitelist — front-end
+                # força seleção obrigatória no AdminPage E UploadPage. Default só
+                # se a UI antiga mandar nada (compat). Não aceitamos valor fora
+                # da whitelist — risco de quebrar a view `loadEbookBySlug`/
+                # Sala Dev que filtra por categoria.
+                _CAT_WHITELIST = {
+                    'programacao', 'tecnologia', 'gospel',
+                    'literatura', 'autoajuda', 'outros',
+                }
+                _cat_raw = (data.get('categoria') or '').strip()
+                categoria = _cat_raw if _cat_raw in _CAT_WHITELIST else 'programacao'
+
                 # Validação: storage_path DEVE começar com user_id (isolamento!)
                 if not storage_path.startswith(f'{user_id}/'):
                     return self.send_json(403, {'error': 'Você só pode processar seus próprios uploads'})
@@ -802,11 +814,7 @@ class Handler(BaseHTTPRequestHandler):
                         'price_cents': 0,
                         'owner_user_id': user_id,
                         'is_published': True,
-                        # 23/08/2026: novos uploads default 'programacao' (admin
-                        # pode mudar depois). Pra uploads de usuário normal (que
-                        # não vão pra vitrine por causa de owner_user_id != ADMIN_USER_ID)
-                        # não importa muito, mas é melhor deixar explícito.
-                        'categoria': 'programacao',
+                        'categoria': categoria,
                     }).encode(),
                     headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
                              'Content-Type': 'application/json',
