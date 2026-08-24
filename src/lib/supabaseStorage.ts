@@ -175,11 +175,16 @@ export async function loadEbookBySlug(slug: string): Promise<{
   pdf_storage_path: string | null
   total_pages: number
   owner_user_id: string | null
+  // 23/08/2026: precisei adicionar categoria aqui pro gate da Sala Dev.
+  // Sem isso, dynamicBook.categoria ficava undefined e o botão Área Dev
+  // se escondia pra TODO livro (mesmo os programacao) — bug pego via
+  // print do Isaías no celular 23/08 21:30.
+  categoria: string | null
 } | null> {
   if (!SUPABASE_READY) return null
   const { data, error } = await supabase
     .from('ebooks')
-    .select('id, slug, title, author, cover_url, pdf_storage_path, total_pages, owner_user_id')
+    .select('id, slug, title, author, cover_url, pdf_storage_path, total_pages, owner_user_id, categoria')
     .eq('slug', slug)
     .maybeSingle()
   if (error || !data) return null
@@ -191,5 +196,6 @@ export async function loadEbookBySlug(slug: string): Promise<{
     pdf_storage_path: data.pdf_storage_path,
     total_pages: data.total_pages || 0,
     owner_user_id: data.owner_user_id,
+    categoria: data.categoria ?? null,
   }
 }

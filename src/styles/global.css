@@ -448,6 +448,40 @@ input, textarea { font: inherit; color: inherit; }
   50%      { box-shadow: 0 0 0 6px rgba(31, 111, 94, 0); }
 }
 
+/* Toggle do Modo Mentor (Modo Autor) — Professor IA do Leitor.
+   Aparece no composer do chat SÓ quando o livro tem skill de Mentor carregada
+   (verifica /has-skill?bookSlug=<slug> no mount). Pitfall: configurado em
+   src/pages/ReaderPage.tsx — estado mora no ReaderPage (não no ProfessorChat)
+   pra sobreviver a re-renders do PDF viewer. */
+.modo-mentor-toggle {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink-soft);
+  border-radius: 10px;
+  padding: 8px 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.18s ease;
+}
+.modo-mentor-toggle:hover:not(:disabled) {
+  background: var(--line);
+  border-color: var(--brand);
+}
+.modo-mentor-toggle.is-on {
+  background: linear-gradient(135deg, #6a4cff, #9a7cff);
+  color: white;
+  border-color: transparent;
+  box-shadow: 0 2px 12px rgba(106, 76, 255, 0.35);
+}
+.modo-mentor-toggle.is-on:hover { filter: brightness(1.08); }
+.modo-mentor-toggle:disabled { opacity: 0.55; cursor: not-allowed; }
+.modo-mentor-toggle .label { line-height: 1; }
+
 .admin-grid {
   display: grid;
   gap: 16px;

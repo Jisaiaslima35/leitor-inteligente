@@ -10,7 +10,7 @@
 // — o admin pode publicar livros sem precisar re-indexar RAG.
 
 import { ADMIN_USER_ID } from './admin'
-import type { Book } from '../domain/types'
+import type { Book, Categoria } from '../domain/types'
 
 const SUPABASE_URL =
   (import.meta as any).env?.VITE_SUPABASE_URL || ''
@@ -28,6 +28,7 @@ export interface SupabaseEbook {
   total_pages: number
   is_published: boolean
   owner_user_id: string | null
+  categoria: string | null
 }
 
 export interface CatalogFetchResult {
@@ -50,7 +51,7 @@ export async function loadCatalogFromSupabase(): Promise<CatalogFetchResult> {
       `${SUPABASE_URL}/rest/v1/ebooks?is_published=eq.true` +
       `&owner_user_id=eq.${ADMIN_USER_ID}` +
       `&price_cents=gt.0` +
-      `&select=id,slug,title,author,description,cover_url,price_cents,total_pages` +
+      `&select=id,slug,title,author,description,cover_url,price_cents,total_pages,categoria` +
       `&order=created_at.desc&limit=200`
     const resp = await fetch(url, {
       headers: {
@@ -62,6 +63,7 @@ export async function loadCatalogFromSupabase(): Promise<CatalogFetchResult> {
       return { books: [], error: `http_${resp.status}` }
     }
     const rows: SupabaseEbook[] = await resp.json()
+    const VALID: ReadonlySet<string> = new Set(['programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros'])
     const books: Book[] = (rows || []).map((row) => ({
       id: row.slug,
       title: row.title,
@@ -72,6 +74,9 @@ export async function loadCatalogFromSupabase(): Promise<CatalogFetchResult> {
       totalPages: row.total_pages,
       highlights: [],
       chunks: [],
+      // 23/08/2026: novo campo. Default 'outros' se vier NULL ou inválido
+      // (proteção pra livros antigos cadastrados antes da migration).
+      categoria: (row.categoria && VALID.has(row.categoria) ? row.categoria : 'outros') as Categoria,
     }))
     return { books, error: null }
   } catch (err: any) {

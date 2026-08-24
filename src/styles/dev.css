@@ -1,0 +1,632 @@
+/* dev.css — Sala Dev do Leitor Inteligente (playground + Mentor Dev)
+   ISAÍAS: 23/08/2026, primeira versão. Tema dark consistente com o resto. */
+
+.dev-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 0 40px;
+  max-width: 1200px;
+  margin: 0 auto;
+  color: var(--ink);
+}
+
+.dev-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.dev-header-text { flex: 1; min-width: 0; }
+.dev-title {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 4px;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+.dev-book-label {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--muted);
+  margin-left: 4px;
+}
+.dev-subtitle {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.dev-header-actions { display: flex; gap: 8px; }
+
+.dev-global-error {
+  padding: 10px 14px;
+  background: rgba(220, 38, 38, 0.12);
+  color: #fca5a5;
+  border: 1px solid rgba(220, 38, 38, 0.3);
+  border-radius: 10px;
+  font-size: 0.88rem;
+}
+
+.dev-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  flex-wrap: wrap;
+}
+.dev-lang-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+}
+.dev-lang-picker select {
+  padding: 6px 10px;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.dev-char-count {
+  margin-left: auto;
+  font-size: 0.82rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.dev-char-count.is-over { color: #fca5a5; font-weight: 600; }
+.dev-run-btn { display: inline-flex; align-items: center; gap: 6px; min-width: 110px; justify-content: center; }
+
+.dev-editor-wrap {
+  background: #0e1116;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+.dev-editor {
+  display: block;
+  width: 100%;
+  min-height: 320px;
+  padding: 14px 16px;
+  background: transparent;
+  color: #e6edf3;
+  border: 0;
+  outline: 0;
+  resize: vertical;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, 'Courier New', monospace;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  tab-size: 2;
+  caret-color: #d4af37;
+}
+
+.dev-turns {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 8px;
+}
+.dev-section-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  margin: 0 0 4px;
+}
+.dev-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+  background: var(--bg-elev);
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+}
+
+/* P2.4b — PDF embutido na Sala Dev (mesmo PdfViewer do Reader) */
+.dev-pdf-panel {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.dev-pdf-panel .pdf-toolbar {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--bg);
+}
+.dev-pdf-viewer-wrap {
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--bg);
+}
+.dev-pdf-empty {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 20px;
+  font-size: 0.9rem;
+  color: var(--muted);
+  background: var(--bg-elev);
+}
+.dev-pdf-empty > svg { color: var(--brand); flex-shrink: 0; }
+.dev-pdf-err {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+.dev-pdf-err p { margin: 0; color: var(--ink); font-size: 0.9rem; }
+
+/* P2.4 — chat sobre livro */
+.dev-book-chat {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dev-chat-page-control {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+.dev-chat-page-control input {
+  width: 64px;
+  padding: 4px 8px;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.dev-chat-window {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.dev-chat-empty {
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-style: italic;
+  text-align: center;
+  padding: 12px 8px;
+}
+.dev-chat-bubble {
+  font-size: 0.88rem;
+  line-height: 1.5;
+  padding: 8px 12px;
+  border-radius: 10px;
+  max-width: 85%;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.dev-chat-bubble.user {
+  align-self: flex-end;
+  background: rgba(212, 175, 55, 0.18);
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  color: var(--ink);
+}
+.dev-chat-bubble.ai {
+  align-self: flex-start;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+}
+.dev-chat-composer {
+  display: flex;
+  gap: 8px;
+}
+.dev-chat-composer input {
+  flex: 1;
+  padding: 9px 12px;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-family: inherit;
+}
+.dev-chat-composer input:focus {
+  outline: 2px solid rgba(212, 175, 55, 0.4);
+  outline-offset: -1px;
+}
+.dev-chat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dev-chat-chips button {
+  padding: 6px 12px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--ink-soft);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  transition: transform 0.15s, border-color 0.15s;
+}
+.dev-chat-chips button:hover:not(:disabled) {
+  border-color: rgba(212, 175, 55, 0.5);
+  transform: translateY(-1px);
+}
+.dev-chat-chips button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* P2.6 — última execução em destaque + CTA Mentor */
+.dev-latest-result {
+  background: var(--bg-elev);
+  border: 2px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.dev-latest-outputs {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dev-mentor-cta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 0 0;
+}
+.dev-mentor-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 24px;
+  font-size: 1rem;
+  font-weight: 700;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #d4af37, #b8932e);
+  color: #1a1a1a;
+  border: none;
+  box-shadow: 0 4px 14px rgba(212, 175, 55, 0.3);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.dev-mentor-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(212, 175, 55, 0.45);
+}
+.dev-mentor-btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+.dev-mentor-compact { font-size: 0.85rem; padding: 8px 12px; }
+
+.dev-turn {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dev-turn-header {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.dev-turn-time { font-variant-numeric: tabular-nums; }
+.dev-turn-lang { color: var(--brand); font-weight: 600; }
+.dev-turn-exit { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; }
+.dev-turn-exit.is-ok { color: #4ade80; }
+.dev-turn-exit.is-err { color: #fca5a5; }
+
+.dev-turn-code {
+  margin: 0;
+  padding: 10px 12px;
+  background: #0e1116;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: #e6edf3;
+  overflow-x: auto;
+  white-space: pre;
+}
+.dev-output {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 12px;
+  /* 23/08/2026: borda colorida conforme exit_code do Piston.
+     Verde se exit 0 (sucesso limpo), vermelho se exit != 0.
+     Antes era só border-left fina — invisível no tema claro. */
+  border-left: 3px solid var(--line);
+  transition: border-color 0.18s ease;
+}
+.dev-output.is-ok {
+  border-color: #22c55e;
+  border-left-color: #22c55e;
+  border-left-width: 4px;
+  background: rgba(34, 197, 94, 0.04);
+}
+.dev-output.is-ok h4 { color: #15803d; }
+.dev-output.is-err {
+  border-color: #dc2626;
+  border-left-color: #dc2626;
+  border-left-width: 4px;
+  background: rgba(220, 38, 38, 0.06);
+}
+.dev-output.is-err h4 { color: #b91c1c; }
+.dev-output h4 {
+  margin: 0 0 4px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.dev-output pre {
+  margin: 0;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  /* preto sobre off-white = legível. (cor antiga #e6edf3 era branco em
+     fundo var(--bg) claro, ficava invisível no tema light do Leitor) */
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* Legado: classe dev-output-err mantida pra stderr-only (sem stdout).
+   No novo fluxo, .dev-output.is-err cobre o caso "houve stderr e
+   exit != 0". Esta classe vira noop visualmente mas fica no JSX
+   pra robustez. */
+.dev-output-err h4 { color: #b91c1c; }
+.dev-output-err pre { color: #7f1d1d; }
+
+.dev-mentor-area { margin-top: 4px; }
+.dev-mentor-hint {
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-style: italic;
+}
+.dev-mentor-bubble {
+  background: linear-gradient(135deg, rgba(212, 175, 55, 0.08), rgba(212, 175, 55, 0.02));
+  border: 1px solid rgba(212, 175, 55, 0.25);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+.dev-mentor-bubble h4 {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 0 4px;
+  font-size: 0.78rem;
+  color: #d4af37;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.dev-mentor-bubble p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--ink);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.dev-mentor-bubble p .spin { margin-right: 6px; vertical-align: -2px; }
+.dev-mentor-loading p { color: var(--muted); font-style: italic; }
+.dev-mentor-err {
+  border-color: rgba(220, 38, 38, 0.3);
+  background: rgba(220, 38, 38, 0.05);
+}
+.dev-mentor-err h4 { color: #fca5a5; }
+
+/* Botão Área Dev dentro da toolbar do PDF */
+.pdf-toolbar-dev {
+  background: rgba(212, 175, 55, 0.12) !important;
+  border: 1px solid rgba(212, 175, 55, 0.35) !important;
+  color: #d4af37 !important;
+}
+.pdf-toolbar-dev:hover {
+  background: rgba(212, 175, 55, 0.22) !important;
+}
+
+/* 23/08/2026: tela de bloqueio quando o usuário tenta abrir /dev/<slug>
+   de um livro que NÃO é categoria 'programacao'. Não chama API, não
+   carrega DevPage — só avisa educadamente. */
+.dev-blocked {
+  max-width: 560px;
+  margin: 60px auto;
+  padding: 32px 28px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  text-align: center;
+}
+.dev-blocked h2 {
+  margin: 0 0 12px;
+  font-size: 1.4rem;
+  color: var(--ink);
+}
+.dev-blocked p {
+  margin: 8px 0;
+  font-size: 0.95rem;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+.dev-blocked code {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: var(--brand);
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+}
+.dev-blocked .btn {
+  margin-top: 20px;
+}
+
+/* Utilitárias compartilhadas */
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 0.82rem;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* =====================================================================
+   Responsividade mobile — Sala Dev
+   Isaías 23/08: pediu pra deixar a Sala Dev responsiva sem quebrar
+   frontend/backend. Mudanças só no CSS; componentes e fluxos ficam
+   intactos. Breakpoint: <= 720px (tablet/celular) e <= 420px (celular
+   estreito tipo Galaxy Fold / iPhone SE 1ª gen).
+   ===================================================================== */
+
+/* Tablet/celular padrão: cabeçalho, toolbar e chat empilham. PDF
+   continua igual (já tem @media do Reader). */
+@media (max-width: 720px) {
+  .dev-page {
+    padding: 10px 12px 32px;
+    gap: 12px;
+  }
+
+  /* HEADER — título do livro quebra linha; actions descem pra baixo */
+  .dev-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+  .dev-header-text { width: 100%; }
+  .dev-title {
+    flex-wrap: wrap;
+    font-size: 1.1rem;
+    gap: 6px;
+  }
+  .dev-book-label {
+    flex: 1 1 100%;
+    margin-left: 0;
+    font-size: 0.88rem;
+    line-height: 1.35;
+    /* word-break normal: deixa quebrar em espaço, não no meio da palavra */
+    word-break: normal;
+    overflow-wrap: anywhere;
+  }
+  .dev-subtitle { font-size: 0.82rem; }
+  .dev-header-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .dev-header-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  /* TOOLBAR (linguagem + Limpar + Nova sessão + char-count) —
+     empilha vertical, cada linha com largura total */
+  .dev-toolbar {
+    gap: 10px;
+    padding: 10px 12px;
+  }
+  .dev-lang-picker {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .dev-lang-picker select {
+    flex: 1;
+    max-width: 60%;
+    min-width: 0;
+  }
+  .dev-char-count {
+    margin-left: 0;
+    width: 100%;
+    text-align: right;
+  }
+  .dev-run-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* EDITOR — textarea/textarea-equivalente ganha altura menor em mobile
+     (o usuário quer ver o chat em cima também) */
+  .dev-editor { min-height: 220px; font-size: 0.85rem; }
+
+  /* CHAT sobre livro — composer empilha input+botão pra evitar teclado
+     cobrindo; section-title permite wrap pro controle de página */
+  .dev-book-chat { padding: 12px; }
+  .dev-section-title {
+    flex-wrap: wrap;
+    font-size: 0.9rem;
+  }
+  .dev-chat-page-control {
+    margin-left: 0;
+    flex: 1 1 100%;
+    justify-content: flex-end;
+  }
+  .dev-chat-window { max-height: 200px; }
+  .dev-chat-composer {
+    flex-direction: column;
+    gap: 6px;
+  }
+  .dev-chat-composer input { width: 100%; }
+  .dev-chat-chips button {
+    flex: 1 1 auto;
+    text-align: center;
+    padding: 8px 10px;
+  }
+
+  /* PDF EMBUTIDO — limita altura pra não dominar a tela em portrait */
+  .dev-pdf-viewer-wrap { max-height: 50vh; }
+
+  /* ÚLTIMA EXECUÇÃO — padding menor, botão Mentor ocupa largura total */
+  .dev-latest-result { padding: 12px; }
+  .dev-mentor-btn {
+    width: 100%;
+    justify-content: center;
+    padding: 14px 18px;
+    font-size: 0.95rem;
+  }
+
+  /* TURNS — código com scroll horizontal sem estourar o card */
+  .dev-turn { padding: 12px; }
+  .dev-turn-code { font-size: 0.78rem; }
+}
+
+/* Celular estreito (<= 420px) — apertar mais */
+@media (max-width: 420px) {
+  .dev-page { padding: 8px 8px 28px; gap: 10px; }
+  .dev-header { padding: 10px 12px; }
+  .dev-title { font-size: 1rem; }
+  .dev-subtitle { font-size: 0.78rem; }
+  .dev-pdf-viewer-wrap { max-height: 45vh; }
+  .dev-mentor-btn { padding: 12px 14px; font-size: 0.9rem; }
+  /* esconde labels verbosas dos botões no header pra caber */
+  .dev-header-actions .btn .btn-label-long { display: none; }
+}

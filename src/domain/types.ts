@@ -44,4 +44,31 @@ export interface Book {
   totalPages: number
   highlights: string[]
   chunks: readonly BookChunk[]
+  /** Categoria do livro — controla quais features extras habilita.
+   *  Adicionado 23/08/2026: Sala Dev só abre se === 'programacao'. */
+  categoria: Categoria
+}
+
+/** Categorias oficiais do Leitor. Default no Supabase: 'outros'
+ *  (admin tem que marcar explicitamente como 'programacao' pra
+ *  habilitar Sala Dev). */
+export type Categoria =
+  | 'programacao'   // Sala Dev habilitada
+  | 'tecnologia'    // futuro: tech geral, sem playground de código
+  | 'gospel'
+  | 'literatura'
+  | 'autoajuda'
+  | 'outros'
+
+export const CATEGORIAS: Categoria[] = [
+  'programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros',
+]
+
+export const CATEGORIA_LABEL: Record<Categoria, string> = {
+  programacao: 'Programação',
+  tecnologia: 'Tecnologia (geral)',
+  gospel: 'Gospel / Religioso',
+  literatura: 'Literatura',
+  autoajuda: 'Autoajuda',
+  outros: 'Outros',
 }

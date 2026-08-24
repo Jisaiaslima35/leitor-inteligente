@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { ChevronLeft, ChevronRight, Mic, Pause, Play, Send, Sparkles, Volume2, VolumeX, ZoomIn, ZoomOut } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Mic, Pause, Play, Send, Sparkles, Volume2, VolumeX, ZoomIn, ZoomOut, Code2 } from 'lucide-react'
 import type { Book } from '../domain/types'
 import type { ProgressState } from '../domain/library'
 import { getProgress } from '../domain/progress'
@@ -39,9 +39,10 @@ interface Props {
   book: Book
   progress: ProgressState
   onTrack: (book: Book, page: number) => void
+  onOpenDev?: (bookId: string) => void
 }
 
-export function ReaderPage({ book, progress, onTrack }: Props) {
+export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
   const { user } = useAuth()
   const userId = user.id
   const [pdfUrl, setPdfUrl] = useState<string | null>(null)
@@ -181,7 +182,28 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
   const [voiceSupported] = useState(() => getSpeechRecognition() !== null)
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const chatScrollRef = useRef<HTMLDivElement>(null)
-  const speech = useSpeechToggle()
+  // modoMentor DEVE ser declarado ANTES de useSpeechToggle — senão cai em
+  // TDZ (Temporal Dead Zone) do `const` e o React quebra com
+  // "Cannot access 'modoMentor' before initialization". Bug pego via
+  // F12 em 23/08/2026 03:18.
+  const [modoMentor, setModoMentor] = useState(false)
+  const [hasSkill, setHasSkill] = useState(false)
+  const speech = useSpeechToggle(modoMentor)
+
+  // Checar se o livro atual tem skill de Mentor (Modo Autor) carregada.
+  // Botão "💡 Modo Mentor" só aparece se hasSkill === true.
+  useEffect(() => {
+    let cancelled = false
+    if (!book?.id) {
+      setHasSkill(false)
+      return
+    }
+    fetch(`/${book.id}/semantic-api/has-skill?bookSlug=${encodeURIComponent(book.id)}`)
+      .then((r) => r.ok ? r.json() : { has_skill: false })
+      .then((data) => { if (!cancelled) setHasSkill(Boolean(data.has_skill)) })
+      .catch(() => { if (!cancelled) setHasSkill(false) })
+    return () => { cancelled = true }
+  }, [book?.id])
 
   useEffect(() => () => {
     recognitionRef.current?.stop()
@@ -210,7 +232,7 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
       const response = await fetch(semanticUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: text, currentPage: page, bookSlug: book.id }),
+        body: JSON.stringify({ question: text, currentPage: page, bookSlug: book.id, modo_mentor: modoMentor }),
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'Falha ao consultar o livro')
@@ -232,7 +254,7 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
     } finally {
       setThinking(false)
     }
-  }, [book.id, page, thinking, speech])
+  }, [book.id, page, thinking, speech, modoMentor])
 
   const toggleListening = useCallback(() => {
     if (listening) {
@@ -395,6 +417,22 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
             <Sparkles size={16} />
             <span>Resumir página</span>
           </button>
+          <button
+            type="button"
+            className="icon-btn pdf-toolbar-dev"
+            onClick={() => onOpenDev?.(book.id)}
+            title="Abrir a Sala Dev (playground de código + Mentor Dev)"
+            aria-label="Abrir Sala Dev"
+            // 23/08/2026: Sala Dev é exclusiva pra livros de programação.
+            // Outros livros (gospel, autoajuda, etc) simplesmente não veem o botão.
+            // A trava REAL fica no App.tsx (rota /dev/<slug>) — isso aqui é só
+            // visual pra não confundir o usuário.
+            hidden={book.categoria !== 'programacao'}
+            style={book.categoria !== 'programacao' ? { display: 'none' } : undefined}
+          >
+            <Code2 size={16} />
+            <span>Área Dev</span>
+          </button>
         </div>
       </div>
 
@@ -490,6 +528,9 @@ export function ReaderPage({ book, progress, onTrack }: Props) {
         speech={speech}
         chatScrollRef={chatScrollRef}
         page={page}
+        modoMentor={modoMentor}
+        setModoMentor={setModoMentor}
+        hasSkill={hasSkill}
       />
     </section>
   )
@@ -515,9 +556,12 @@ interface ChatProps {
   }
   chatScrollRef: React.RefObject<HTMLDivElement | null>
   page: number  // passada pra os chips rápidos preencherem o número da página
+  modoMentor: boolean
+  setModoMentor: (v: boolean) => void
+  hasSkill: boolean  // só mostra botão Modo Mentor se tiver skill gerada pro slug
 }
 
-function ProfessorChat({ book, messages, input, setInput, send, thinking, listening, voiceSupported, toggleListening, speech, chatScrollRef, page }: ChatProps) {
+function ProfessorChat({ book, messages, input, setInput, send, thinking, listening, voiceSupported, toggleListening, speech, chatScrollRef, page, modoMentor, setModoMentor, hasSkill }: ChatProps) {
   return (
     <div className="professor-panel" style={{ marginTop: 20 }}>
       <div className="professor-header">
@@ -552,6 +596,23 @@ function ProfessorChat({ book, messages, input, setInput, send, thinking, listen
           onKeyDown={(e) => { if (e.key === 'Enter') send(input) }}
           aria-label="Pergunta para o professor"
         />
+        {hasSkill && (
+          <button
+            type="button"
+            data-testid="modo-mentor-toggle"
+            className={`modo-mentor-toggle ${modoMentor ? 'is-on' : ''}`}
+            onClick={() => setModoMentor(!modoMentor)}
+            disabled={thinking}
+            aria-pressed={modoMentor}
+            aria-label={modoMentor ? 'Desligar Modo Mentor' : 'Ligar Modo Mentor'}
+            title={modoMentor
+              ? 'Modo Mentor ativo — o Professor IA responde em 1ª pessoa, raciocinando pelos frameworks do livro'
+              : 'Ativar Modo Mentor — o Professor IA responde em 1ª pessoa como Mentor do livro'}
+          >
+            <span aria-hidden="true">💡</span>
+            <span className="label">Modo Mentor</span>
+          </button>
+        )}
         <button
           type="button"
           className={`icon-btn ${listening ? 'is-on' : ''}`}
@@ -567,13 +628,9 @@ function ProfessorChat({ book, messages, input, setInput, send, thinking, listen
           type="button"
           className={`icon-btn ${speech.status === 'speaking' ? 'is-on is-speaking' : ''}`}
           onClick={() => {
-            // Garante cancel() nativo do navegador a qualquer momento,
-            // mesmo se o estado React do hook tenha ficado travado em 'idle' ou 'speaking'.
-            try {
-              if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-                window.speechSynthesis.cancel()
-              }
-            } catch { /* ignore */ }
+            // Para qualquer fala em curso (cloud TTS ou nativo) antes de
+            // decidir se vai tocar. O speech.stop() cuida dos dois caminhos.
+            speech.stop()
             const lastAi = [...messages].reverse().find((m) => m.role === 'ai')
             if (!lastAi) return
             speech.toggle(lastAi.text)
@@ -656,6 +713,28 @@ function ProfessorChat({ book, messages, input, setInput, send, thinking, listen
           onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)' }}
         >
           💬 Exemplo prático
+        </button>
+        <button
+          type="button"
+          disabled={thinking}
+          onClick={() => send(`Crie 3 exercícios práticos sobre o conteúdo da página ${page}, com enunciado claro e nível progressivo (do mais fácil ao mais difícil).`)}
+          title="Gera 3 exercícios com nível progressivo pra você treinar"
+          style={{
+            padding: '8px 14px',
+            fontSize: 13,
+            fontWeight: 600,
+            borderRadius: 999,
+            background: 'linear-gradient(135deg, #2a2540, #3a3150)',
+            color: '#e8e0d0',
+            border: '1px solid #d4af37',
+            cursor: thinking ? 'not-allowed' : 'pointer',
+            opacity: thinking ? 0.5 : 1,
+            transition: 'transform 0.15s, box-shadow 0.15s',
+          }}
+          onMouseEnter={(e) => { if (!thinking) e.currentTarget.style.transform = 'translateY(-1px)' }}
+          onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)' }}
+        >
+          🎯 3 exercícios práticos
         </button>
       </div>
       {speech.debugInfo && (

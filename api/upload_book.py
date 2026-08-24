@@ -802,6 +802,11 @@ class Handler(BaseHTTPRequestHandler):
                         'price_cents': 0,
                         'owner_user_id': user_id,
                         'is_published': True,
+                        # 23/08/2026: novos uploads default 'programacao' (admin
+                        # pode mudar depois). Pra uploads de usuário normal (que
+                        # não vão pra vitrine por causa de owner_user_id != ADMIN_USER_ID)
+                        # não importa muito, mas é melhor deixar explícito.
+                        'categoria': 'programacao',
                     }).encode(),
                     headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
                              'Content-Type': 'application/json',
@@ -898,6 +903,9 @@ class Handler(BaseHTTPRequestHandler):
                 price_cents = int(fields.get('price_cents', '0') or 0)
                 is_published = fields.get('is_published', 'true').lower() in ('1', 'true', 'yes', 'on')
                 author = 'Admin Isaías'
+                # 23/08/2026: categoria vem do form. Whitelist estrita pra evitar lixo.
+                _cat_raw = (fields.get('categoria', '') or '').strip().lower()
+                categoria = _cat_raw if _cat_raw in {'programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros'} else 'programacao'
 
                 # 3. Salva PDF num path admin-only (storage_path = admin/admin_livro_{ts}.pdf)
                 ts = int(time.time())
@@ -935,6 +943,7 @@ class Handler(BaseHTTPRequestHandler):
                         'price_cents': price_cents,
                         'owner_user_id': ADMIN_USER_ID,
                         'is_published': is_published,
+                        'categoria': categoria,
                     }).encode(),
                     headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
                              'Content-Type': 'application/json',
@@ -1041,8 +1050,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(400, {'error': 'ebook_id obrigatório'})
 
                 # Campos opcionais — só atualiza o que vier (PUT parcial)
-                allowed = {'title', 'slug', 'author', 'price_cents', 'is_published', 'shareable'}
+                allowed = {'title', 'slug', 'author', 'price_cents', 'is_published', 'shareable', 'categoria'}
                 update = {k: v for k, v in data.items() if k in allowed and v is not None}
+                # 23/08/2026: whitelist estrita pra categoria — evita lixo no DB
+                if 'categoria' in update:
+                    cat = str(update['categoria']).strip().lower()
+                    if cat not in {'programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros'}:
+                        return self.send_json(400, {'error': f'categoria inválida: {cat!r}. Use: programacao, tecnologia, gospel, literatura, autoajuda, outros.'})
+                    update['categoria'] = cat
                 if 'price_cents' in update:
                     update['price_cents'] = max(0, int(update['price_cents']))
                 if 'slug' in update:

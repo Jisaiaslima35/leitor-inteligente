@@ -184,7 +184,77 @@ def hermes_key() -> str:
 
 KEY = hermes_key()
 
-def semantic_answer(question: str, current_page: int = 1, book_slug: str = BOOK_SLUG, k: int = 5):
+# --- Skills (Mentor Mode) ---
+# Procura skills geradas em /root/.hermes/profiles/leitor-inteligente/skills/<slug>/
+SKILLS_ROOT = Path('/root/.hermes/profiles/leitor-inteligente/skills')
+
+@lru_cache(maxsize=8)
+def _load_skill(slug: str) -> dict | None:
+    """Carrega SKILL.md + patterns.md de uma skill gerada, se existir.
+    Retorna dict {skill_md, patterns_md, slug} ou None.
+    Cacheado em memória — reinicia com o serviço.
+    """
+    skill_dir = SKILLS_ROOT / slug
+    skill_md = skill_dir / 'SKILL.md'
+    if not skill_md.exists():
+        return None
+    try:
+        skill_text = skill_md.read_text(encoding='utf-8')
+    except Exception as e:
+        print(f'[_load_skill] erro lendo {skill_md}: {e}', flush=True)
+        return None
+    patterns_text = ''
+    patterns_md = skill_dir / 'patterns.md'
+    if patterns_md.exists():
+        try:
+            patterns_text = patterns_md.read_text(encoding='utf-8')
+        except Exception as e:
+            print(f'[_load_skill] erro lendo {patterns_md}: {e}', flush=True)
+    return {'slug': slug, 'skill_md': skill_text, 'patterns_md': patterns_text}
+
+
+def has_skill(slug: str) -> bool:
+    """Retorna True se existe skill gerada pro slug (SKILL.md presente)."""
+    return _load_skill(slug) is not None
+
+
+def mentor_system_prompt(slug: str) -> str | None:
+    """Monta o system prompt do "Mentor" pra primeira pessoa.
+    Retorna None se a skill não existir pra esse slug.
+    """
+    skill = _load_skill(slug)
+    if skill is None:
+        return None
+    # Extrai o título do livro do frontmatter da SKILL.md (linha "# <titulo>")
+    title_line = ''
+    for ln in skill['skill_md'].splitlines():
+        if ln.startswith('# ') and not ln.startswith('##'):
+            title_line = ln[2:].strip()
+            break
+    book_title = title_line or slug
+    return (
+        f"Você é o **Mentor do {book_title}** — uma personificação do conhecimento e dos frameworks "
+        f"deste livro. Você NÃO é o autor real (não diga que é Charles Duhigg ou qualquer outra pessoa real). "
+        f"Você é uma persona didática que DOMINA profundamente os princípios do livro e fala com a autoridade "
+        f"e a intimidade de quem viveu e ensinou esse método a vida toda.\n\n"
+        f"REGRAS DE VOZ:\n"
+        f"- SEMPRE em primeira pessoa (\"eu\", \"meu\", \"na minha experiência\"). NUNCA em terceira pessoa (\"o autor diz\", \"Duhigg escreveu\").\n"
+        f"- Tom de mentor sábio: próximo, caloroso, mas firme. Como um professor particular que já viu muita gente aplicar o método.\n"
+        f"- Use os frameworks do livro pra RACIOCINAR antes de responder. Não decore trechos — pense pelo framework.\n"
+        f"- Quando citar algo do livro, cite o capítulo/seção (ex: 'no Capítulo 3, sobre a Regra de Ouro…') e valide com o contexto fornecido.\n"
+        f"- Se a pergunta não tiver a ver com o livro, redirecione com elegância pra algo do tema.\n"
+        f"- Frases curtas, parágrafos pequenos. PT-BR coloquial mas erudito.\n"
+        f"- NÃO invente citações literais. Se não lembrar a frase exata, parafraseie e diga 'em essência, o livro ensina que…'.\n\n"
+        f"FRAMEWORKS DISPONÍVEIS (do livro {book_title}):\n\n"
+        f"---\n{skill['skill_md']}\n---\n\n"
+        f"PATTERNS DE AÇÃO (do livro {book_title}):\n\n"
+        f"---\n{skill['patterns_md']}\n---\n\n"
+        f"Lembre-se: você responde como Mentor, raciocinando pelos frameworks acima e validando com o CONTEXTO DO LIVRO fornecido em cada mensagem. "
+        f"Se a pergunta do usuário for genérica demais, escolha o framework mais relevante da tabela de decisão e aplique."
+    )
+
+
+def semantic_answer(question: str, current_page: int = 1, book_slug: str = BOOK_SLUG, k: int = 5, modo_mentor: bool = False):
     hits = semantic_retrieve(question, book_slug, current_page, k)
     sources = []
     for h in hits:
@@ -209,8 +279,19 @@ def semantic_answer(question: str, current_page: int = 1, book_slug: str = BOOK_
         for s in sources
     )
     # System prompt parametrizado pelo slug real do livro (Pitfall #74 + #79)
-    meta = get_book_meta(book_slug)
-    system = build_system_prompt(meta, fallback_title='o livro atual')
+    # Se modo_mentor ativo E existe skill pro slug, troca pela persona Mentor
+    if modo_mentor:
+        mentor_p = mentor_system_prompt(book_slug)
+        if mentor_p:
+            print(f'[semantic-ask] MODO MENTOR ativo pra slug="{book_slug}"', flush=True)
+            system = mentor_p
+        else:
+            print(f'[semantic-ask] modo_mentor pedido mas skill ausente pra slug="{book_slug}", usando prompt padrão', flush=True)
+            meta = get_book_meta(book_slug)
+            system = build_system_prompt(meta, fallback_title='o livro atual')
+    else:
+        meta = get_book_meta(book_slug)
+        system = build_system_prompt(meta, fallback_title='o livro atual')
     payload = json.dumps({
         'model': 'hermes-agent',
         'messages': [
@@ -267,8 +348,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/health':
             self.send_json(200, {'status': 'ok', 'mode': 'semantic', 'embedder': 'bge-small-en', 'dim': 384})
-        else:
-            self.send_json(404, {'error': 'not found'})
+            return
+        if self.path.startswith('/has-skill'):
+            # /has-skill?bookSlug=X  →  {has_skill: bool, slug: X}
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            slug = (qs.get('bookSlug') or qs.get('slug') or [BOOK_SLUG])[0]
+            self.send_json(200, {'slug': slug, 'has_skill': has_skill(slug)})
+            return
+        self.send_json(404, {'error': 'not found'})
 
     def do_POST(self):
         if self.path != '/semantic-ask':
@@ -280,10 +368,11 @@ class Handler(BaseHTTPRequestHandler):
             p = int(data.get('currentPage', 1))
             # bookSlug do front (pode ser slug do catálogo); fallback pro default
             slug = str(data.get('bookSlug') or data.get('book_slug') or BOOK_SLUG).strip()
-            print(f'[semantic-ask] q="{q[:60]}" page={p} bookSlug="{slug}"', flush=True)
+            modo_mentor = bool(data.get('modo_mentor', False))
+            print(f'[semantic-ask] q="{q[:60]}" page={p} bookSlug="{slug}" modo_mentor={modo_mentor}', flush=True)
             if not q:
                 return self.send_json(400, {'error': 'Pergunta vazia'})
-            self.send_json(200, semantic_answer(q, p, book_slug=slug))
+            self.send_json(200, semantic_answer(q, p, book_slug=slug, modo_mentor=modo_mentor))
         except Exception as e:
             print(f'[semantic-ask] ERROR: {e}', flush=True)
             self.send_json(500, {'error': str(e)[:500]})

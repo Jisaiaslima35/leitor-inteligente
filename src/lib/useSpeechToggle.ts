@@ -2,6 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 type SpeechStatus = 'idle' | 'speaking'
 
+// Vozes MiniMax usadas no Professor IA.
+// Modo Mentor (system prompt do Mentor do livro) → voz masculina varonil.
+// Modo normal (Professor IA padrão) → voz feminina PT-BR.
+// Isaías escolheu essas em 23/08/2026 após ouvir amostras.
+const VOICE_MENTOR = 'Portuguese_Deep-VoicedGentleman'
+const VOICE_NORMAL = 'female-shaonv'
+
 /**
  * Hook compartilhado pra NARRAÇÃO por TTS no Leitor Inteligente.
  *
@@ -12,7 +19,7 @@ type SpeechStatus = 'idle' | 'speaking'
  *      → setTimeout trava em mobile quando componente desmonta
  *  v3: 2 estados binários + requestAnimationFrame + pickVoice fallback
  *      + onvoiceschanged listener
- *  v4 (atual, 14/08/2026): mesmo de v3 PLUS return useMemo
+ *  v4 (14/08/2026): mesmo de v3 PLUS return useMemo
  *      → BUG do Isaías: hook retornava objeto NOVO a cada render, então o
  *        useEffect(() => () => speech.stop(), [speech]) do ProfessorChat
  *        cancelava a fala IMEDIATAMENTE assim que a resposta do Professor
@@ -21,13 +28,25 @@ type SpeechStatus = 'idle' | 'speaking'
  *      → botões do Professor IA não iniciavam a fala pelo mesmo motivo.
  *      → PLUS: 3 RAF (não 2) entre cancel() e speak() pra Chrome Android
  *        que tem delay maior pra enfileirar utterance.
+ *  v5 (23/08/2026 1ª): aceita `useCloudTts` (boolean). Quando true, usa
+ *      fetch /leitor-inteligente/tts-api/tts (MiniMax Audio Starter
+ *      R$13,50, voz Portuguese_Deep-VoicedGentleman) + elemento <audio>.
+ *      Quando false, mantém speechSynthesis nativo (voz do browser).
+ *      Mapeamento: Modo Mentor = useCloudTts=true (voz do Mentor),
+ *      modo normal = useCloudTts=false (voz nativa do browser).
+ *  v6 (23/08/2026 2ª): SEMPRE usa MiniMax (sem fallback nativo). Isaías
+ *      pediu voz MiniMax em ambos os modos (igual nas rádios com voz
+ *      clonada). O param agora é `modoMentor` e seleciona a voz:
+ *        - modoMentor=true  → VOICE_MENTOR (Portuguese_Deep-VoicedGentleman)
+ *        - modoMentor=false → VOICE_NORMAL (female-shaonv)
+ *      Removido todo o código de speechSynthesis nativo — agora só TTS cloud.
  */
-export function useSpeechToggle() {
+export function useSpeechToggle(modoMentor: boolean = false) {
   const [status, setStatus] = useState<SpeechStatus>('idle')
   const [debugInfo, setDebugInfo] = useState<string>('') // aparece na UI pra debug
   const currentTextRef = useRef<string | null>(null)
-  const currentUtterRef = useRef<SpeechSynthesisUtterance | null>(null)
-  const voicesPromiseRef = useRef<Promise<SpeechSynthesisVoice[]> | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const voiceId = modoMentor ? VOICE_MENTOR : VOICE_NORMAL
 
   const log = useCallback((msg: string) => {
     // eslint-disable-next-line no-console
@@ -41,176 +60,94 @@ export function useSpeechToggle() {
     })
   }, [])
 
-  const getVoices = useCallback((): Promise<SpeechSynthesisVoice[]> => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      return Promise.resolve([])
-    }
-    const synth = window.speechSynthesis
-
-    if (voicesPromiseRef.current) return voicesPromiseRef.current
-
-    voicesPromiseRef.current = new Promise<SpeechSynthesisVoice[]>((resolve) => {
-      const initial = synth.getVoices()
-      if (initial && initial.length > 0) {
-        log(`Voices loaded initially: ${initial.length}`)
-        resolve(initial)
-        return
-      }
-
-      let resolved = false
-      const cleanup = () => {
-        synth.removeEventListener?.('voiceschanged', onChange)
-      }
-      const onChange = () => {
-        if (resolved) return
-        resolved = true
-        cleanup()
-        const v = synth.getVoices()
-        log(`voiceschanged fired: ${v.length}`)
-        resolve(v)
-      }
-      synth.addEventListener?.('voiceschanged', onChange)
-
-      setTimeout(() => {
-        if (resolved) return
-        resolved = true
-        cleanup()
-        const v = synth.getVoices()
-        log(`Timeout 500ms - voices: ${v.length}`)
-        resolve(v)
-      }, 500)
-    })
-
-    return voicesPromiseRef.current
-  }, [log])
-
-  const pickVoice = useCallback(async (): Promise<SpeechSynthesisVoice | null> => {
-    const voices = await getVoices()
-    log(`pickVoice: ${voices.length} available`)
-
-    if (voices.length === 0) {
-      log('⚠️ NENHUMA voz disponível')
-      return null
-    }
-
-    const ptBR = voices.find((v) => v.lang === 'pt-BR' || v.lang === 'pt_BR')
-    if (ptBR) {
-      log(`✓ pt-BR: ${ptBR.name}`)
-      return ptBR
-    }
-
-    const anyPt = voices.find((v) => v.lang.startsWith('pt'))
-    if (anyPt) {
-      log(`⚠ fallback pt-*: ${anyPt.lang} (${anyPt.name})`)
-      return anyPt
-    }
-
-    const enUS = voices.find((v) => v.lang === 'en-US' || v.lang === 'en_US' || v.lang.startsWith('en'))
-    if (enUS) {
-      log(`⚠ fallback en: ${enUS.lang} (${enUS.name})`)
-      return enUS
-    }
-
-    log(`⚠ primeira voz: ${voices[0].lang} (${voices[0].name})`)
-    return voices[0]
-  }, [getVoices, log])
-
   const stop = useCallback(() => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
-    try {
-      window.speechSynthesis.cancel()
-    } catch (e) {
-      log(`stop cancel fail: ${(e as Error).message}`)
+    if (audioRef.current) {
+      try {
+        audioRef.current.pause()
+        audioRef.current.currentTime = 0
+        audioRef.current.src = ''
+      } catch (e) {
+        log(`stop pause fail: ${(e as Error).message}`)
+      }
     }
     currentTextRef.current = null
-    currentUtterRef.current = null
-    log('stopped')
+    log(`stopped (voice=${voiceId})`)
     setStatus('idle')
-  }, [log])
-
-  const waitForCancel = useCallback((): Promise<void> => {
-    // Polling real em synth.speaking / synth.pending (não contagem cega
-    // de frames). Chrome Android varia o tempo de flush do cancel().
-    return new Promise((resolve) => {
-      const synth = window.speechSynthesis
-      const start = Date.now()
-      const check = () => {
-        const clear = !synth.speaking && !synth.pending
-        if (clear || Date.now() - start > 1500) {
-          // +80ms de margem pra fila assentar
-          setTimeout(resolve, 80)
-        } else {
-          requestAnimationFrame(check)
-        }
-      }
-      requestAnimationFrame(check)
-    })
-  }, [])
+  }, [log, voiceId])
 
   const speak = useCallback(async (text: string) => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      log('❌ TTS não suportado neste navegador')
-      return
-    }
-    const synth = window.speechSynthesis
-
+    // v6: SEMPRE MiniMax via proxy. Voz decidida pelo modoMentor.
     if (!text || !text.trim()) {
-      try { synth.cancel() } catch { /* ignore */ }
+      if (audioRef.current) {
+        try { audioRef.current.pause(); audioRef.current.src = '' } catch { /* ignore */ }
+      }
       currentTextRef.current = null
-      currentUtterRef.current = null
       setStatus('idle')
       return
     }
 
-    log(`speak("${text.slice(0, 30)}...")`)
-    log(`synth.speaking antes: ${synth.speaking}, pending: ${synth.pending}`)
+    log(`speak(voice=${voiceId} "${text.slice(0, 30)}...")`)
 
-    try { synth.cancel() } catch { /* ignore */ }
-    await waitForCancel()
-    log(`after 3 RAF + 80ms: cancelled`)
-
-    const voice = await pickVoice()
-
-    const utter = new SpeechSynthesisUtterance(text)
-    if (voice) utter.voice = voice
-    utter.lang = voice?.lang || 'pt-BR'
-    utter.rate = 1
-
-    utter.onstart = () => {
-      log(`utter.onstart fired`)
+    // Para qualquer audio anterior antes de buscar novo
+    if (audioRef.current) {
+      try { audioRef.current.pause(); audioRef.current.currentTime = 0 } catch { /* ignore */ }
     }
-    utter.onend = () => {
-      log(`utter.onend`)
-      if (currentTextRef.current === text) {
-        currentTextRef.current = null
-        currentUtterRef.current = null
-        setStatus('idle')
-      }
-    }
-    utter.onerror = (event) => {
-      log(`utter.onerror: ${event.error}`)
-      if (currentTextRef.current === text) {
-        currentTextRef.current = null
-        currentUtterRef.current = null
-        setStatus('idle')
-      }
-    }
-
-    currentTextRef.current = text
-    currentUtterRef.current = utter
-    setStatus('speaking')
-    log(`state → speaking`)
 
     try {
-      synth.speak(utter)
-      log(`synth.speak() chamado`)
+      const res = await fetch('/leitor-inteligente/tts-api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice_id: voiceId }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
+        log(`❌ TTS erro: ${err.error || res.status}`)
+        currentTextRef.current = null
+        setStatus('idle')
+        return
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+
+      const audio = new Audio(url)
+      audioRef.current = audio
+      currentTextRef.current = text
+
+      audio.onended = () => {
+        log('audio.onended')
+        if (currentTextRef.current === text) {
+          currentTextRef.current = null
+          audioRef.current = null
+          URL.revokeObjectURL(url)
+          setStatus('idle')
+        }
+      }
+      audio.onerror = (event) => {
+        log(`❌ audio.onerror: ${(event as ErrorEvent).message || 'desconhecido'}`)
+        if (currentTextRef.current === text) {
+          currentTextRef.current = null
+          audioRef.current = null
+          URL.revokeObjectURL(url)
+          setStatus('idle')
+        }
+      }
+
+      setStatus('speaking')
+      log('state → speaking')
+      try {
+        await audio.play()
+        log('audio.play() ok')
+      } catch (playErr) {
+        // Autoplay pode ser bloqueado em mobile até o user interagir.
+        // Nesse caso, fica em 'speaking' mas o user precisa tocar de novo.
+        log(`❌ audio.play() falhou: ${(playErr as Error).message}`)
+      }
     } catch (err) {
-      log(`❌ synth.speak falhou: ${(err as Error).message}`)
+      log(`❌ fetch TTS falhou: ${(err as Error).message}`)
       currentTextRef.current = null
-      currentUtterRef.current = null
       setStatus('idle')
     }
-  }, [waitForCancel, pickVoice, log])
+  }, [log, voiceId])
 
   const toggle = useCallback((text: string) => {
     if (status === 'speaking') {
@@ -220,15 +157,16 @@ export function useSpeechToggle() {
     }
   }, [status, stop, speak])
 
-  const isSupported = typeof window !== 'undefined' && 'speechSynthesis' in window
+  // TTS cloud sempre disponível (basta network). Não checa mais
+  // speechSynthesis do browser — MiniMax provê a voz.
+  const isSupported = true
 
   useEffect(() => {
     return () => {
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        try { window.speechSynthesis.cancel() } catch { /* ignore */ }
+      if (audioRef.current) {
+        try { audioRef.current.pause(); audioRef.current.src = '' } catch { /* ignore */ }
       }
       currentTextRef.current = null
-      currentUtterRef.current = null
     }
   }, [])
 
@@ -236,7 +174,7 @@ export function useSpeechToggle() {
   // do hook (ProfessorChat, useEffect com [speech]) re-rode cleanup em
   // todo render e cancele a fala no meio.
   return useMemo(
-    () => ({ status, speak, stop, toggle, isSupported, debugInfo }),
-    [status, speak, stop, toggle, isSupported, debugInfo],
+    () => ({ status, speak, stop, toggle, isSupported, debugInfo, voiceId }),
+    [status, speak, stop, toggle, isSupported, debugInfo, voiceId],
   )
 }

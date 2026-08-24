@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { RefreshCcw, ShoppingBag, Users, Library, Shield, ChevronUp, ChevronDown, Search, Trash2, Upload, BookOpen, CheckCircle2, Circle, Pencil, X } from 'lucide-react'
-import type { User } from '../domain/types'
+import type { User, Categoria } from '../domain/types'
+import { CATEGORIAS, CATEGORIA_LABEL } from '../domain/types'
 import type { LibraryState, ProgressState } from '../domain/library'
 import { ownsBook } from '../domain/library'
 import { getProgress } from '../domain/progress'
@@ -50,6 +51,9 @@ interface EbookRow {
   owner_user_id: string | null
   pdf_storage_path: string | null
   created_at: string
+  // 23/08/2026: adicionado na migration categoria. Default 'outros' pra
+  // livros antigos. Permite habilitar Sala Dev pra livros programacao.
+  categoria: Categoria | null
 }
 
 function formatPrice(cents: number) {
@@ -78,6 +82,7 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
   const [uploadSlug, setUploadSlug] = useState('')
   const [uploadPrice, setUploadPrice] = useState('990')
   const [uploadPublishing, setUploadPublishing] = useState(true)
+  const [uploadCategoria, setUploadCategoria] = useState<Categoria>('programacao')
   const [uploadBusy, setUploadBusy] = useState(false)
   const [uploadMsg, setUploadMsg] = useState<string | null>(null)
 
@@ -104,7 +109,7 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
           .limit(200),
         supabase
           .from('ebooks')
-          .select('id, slug, title, author, cover_url, price_cents, is_published, owner_user_id, pdf_storage_path, created_at')
+          .select('id, slug, title, author, cover_url, price_cents, is_published, owner_user_id, pdf_storage_path, created_at, categoria')
           .eq('owner_user_id', ADMIN_USER_ID)
           .order('created_at', { ascending: false }),
       ])
@@ -214,6 +219,7 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
   const [editPrice, setEditPrice] = useState('')
   const [editPublished, setEditPublished] = useState(true)
   const [editShareable, setEditShareable] = useState(true)
+  const [editCategoria, setEditCategoria] = useState<Categoria>('outros')
   const [editBusy, setEditBusy] = useState(false)
 
   const openEdit = (ebook: EbookRow) => {
@@ -224,6 +230,7 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
     setEditPrice(String(ebook.price_cents))
     setEditPublished(ebook.is_published)
     setEditShareable(true) // default true; ebooks admin normalmente são compartilháveis
+    setEditCategoria(ebook.categoria || 'outros')
     setErr(null)
   }
   const closeEdit = () => {
@@ -246,6 +253,7 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
           price_cents: Math.max(0, parseInt(editPrice, 10) || 0),
           is_published: editPublished,
           shareable: editShareable,
+          categoria: editCategoria,
         }),
       })
       const json = await resp.json().catch(() => ({}))
@@ -281,6 +289,7 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
       form.append('slug', uploadSlug)
       form.append('price_cents', uploadPrice || '0')
       form.append('is_published', String(uploadPublishing))
+      form.append('categoria', uploadCategoria)
       form.append('admin_token', 'admin-bypass-leitor-2026')
       const resp = await fetch('/leitor-inteligente/upload-api/api/admin/upload-book', {
         method: 'POST',
@@ -465,6 +474,19 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
                     disabled={uploadBusy}
                   />
                   <small>Publicar imediatamente (aparece em Loja/Início)</small>
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <small>Categoria (23/08: controla se Sala Dev aparece)</small>
+                  <select
+                    value={uploadCategoria}
+                    onChange={(e) => setUploadCategoria(e.target.value as Categoria)}
+                    disabled={uploadBusy}
+                    style={{ padding: 8, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)' }}
+                  >
+                    {CATEGORIAS.map(c => (
+                      <option key={c} value={c}>{CATEGORIA_LABEL[c]}</option>
+                    ))}
+                  </select>
                 </label>
                 <button type="submit" className="btn btn-primary" disabled={uploadBusy}>
                   {uploadBusy ? 'Enviando…' : 'Subir e publicar'}
@@ -714,6 +736,18 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
               <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <input type="checkbox" checked={editShareable} onChange={(e) => setEditShareable(e.target.checked)} />
                 <small>Compartilhável (link de campanha funciona)</small>
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <small>Categoria (Sala Dev só abre se for Programação)</small>
+                <select
+                  value={editCategoria}
+                  onChange={(e) => setEditCategoria(e.target.value as Categoria)}
+                  style={{ padding: 8, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)' }}
+                >
+                  {CATEGORIAS.map(c => (
+                    <option key={c} value={c}>{CATEGORIA_LABEL[c]}</option>
+                  ))}
+                </select>
               </label>
             </div>
             <div style={{ display: 'flex', gap: 8, marginTop: 20, justifyContent: 'flex-end' }}>

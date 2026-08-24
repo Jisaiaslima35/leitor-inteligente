@@ -21,11 +21,12 @@ import { HomePage } from './pages/HomePage'
 import { LoginPage } from './pages/LoginPage'
 import { UploadPage } from './pages/UploadPage'
 import { BuyPage } from './pages/BuyPage'
+import { DevPage } from './pages/DevPage'
 import { CheckoutModal } from './components/CheckoutModal'
 import { AuthProvider, useAuth } from './lib/AuthContext'
 import { supabase, SUPABASE_READY } from './lib/supabase'
 
-export type Route = 'home' | 'store' | 'library' | 'reader' | 'admin' | 'login' | 'upload' | 'comprar'
+export type Route = 'home' | 'store' | 'library' | 'reader' | 'admin' | 'login' | 'upload' | 'comprar' | 'dev'
 
 const PENDING_BUY_KEY = 'leitor-ia:pending-buy'
 
@@ -164,6 +165,11 @@ function InnerApp() {
 
     loadEbookBySlug(bookId).then((row) => {
       if (cancelled || !row) return
+      // 23/08/2026: whitelist da categoria pra não confiar no que vem do
+      // Supabase (mesma defesa do catalogSupabase.ts). Se vier NULL ou
+      // inválido, cai pra 'outros' e o botão Área Dev se esconde.
+      const CATEGORIAS_VALIDAS = new Set(['programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros'])
+      const cat = row.categoria && CATEGORIAS_VALIDAS.has(row.categoria) ? row.categoria : 'outros'
       const virtual: Book = {
         id: bookId,
         title: row.title,
@@ -174,6 +180,7 @@ function InnerApp() {
         totalPages: row.total_pages,
         highlights: [],
         chunks: [],
+        categoria: cat,
       }
       setDynamicBook(virtual)
     })
@@ -267,7 +274,12 @@ function InnerApp() {
           <LoginPage onBack={() => navigate('home')} onSuccess={() => navigate('library')} />
         )}
         {route === 'reader' && activeBook && isAuthenticated && (
-          <ReaderPage book={activeBook} progress={progress} onTrack={handleTrack} />
+          <ReaderPage
+            book={activeBook}
+            progress={progress}
+            onTrack={handleTrack}
+            onOpenDev={(bookId) => navigate('dev', bookId)}
+          />
         )}
         {route === 'reader' && !activeBook && bookId && isAuthenticated && (
           <section>
@@ -280,6 +292,32 @@ function InnerApp() {
               <button className="btn btn-ghost" onClick={() => navigate('upload')}>Enviar outro livro</button>
             </div>
           </section>
+        )}
+        {route === 'dev' && isAuthenticated && activeBook && activeBook.categoria !== 'programacao' && (
+          // 23/08/2026: trava de acesso. Livro não-programação tentou abrir
+          // /dev/<slug> direto pela URL. Não chama API, não carrega DevPage,
+          // não desperdiça tokens. Só mostra mensagem amigável.
+          <section className="dev-blocked">
+            <h2>🔒 Sala Dev restrita</h2>
+            <p>Esta seção é exclusiva para livros de <strong>programação</strong>.</p>
+            <p>O livro <em>"{activeBook.title}"</em> é da categoria <code>{activeBook.categoria}</code>.</p>
+            <button className="btn btn-primary" onClick={() => navigate(activeBook ? 'reader' : 'library')}>
+              ← Voltar à leitura
+            </button>
+          </section>
+        )}
+        {route === 'dev' && isAuthenticated && (!activeBook || activeBook.categoria === 'programacao') && (
+          <DevPage
+            book={activeBook}
+            // 23/08/2026: precisa passar bookId pro navigate, senão o reader
+            // renderiza sem activeBook (tela branca). onBack do DevPage chama
+            // navigate(route, bookId?) — sem o bookId aqui o ReaderPage nunca
+            // acha o livro.
+            onBack={() => navigate(activeBook ? 'reader' : 'library', activeBook?.id)}
+          />
+        )}
+        {route === 'dev' && !isAuthenticated && (
+          <LoginPage onBack={() => navigate('home')} onSuccess={() => navigate('dev')} />
         )}
         {route === 'reader' && activeBook && !isAuthenticated && (
           <LoginPage
