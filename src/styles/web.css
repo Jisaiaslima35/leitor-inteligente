@@ -104,6 +104,66 @@
 }
 .web-save-status svg { animation: spin 1s linear infinite; }
 
+/* ─── Tabs customizadas do editor (P7.8) ────────────────────────────
+   Substituem o showTabs interno do SandpackCodeEditor (que travava).
+   Sandpack mantém activeFile interno; mudamos via setActiveFile(path). */
+.web-tabs {
+  display: flex;
+  gap: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  padding: 0 4px;
+}
+.web-tab-btn {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  user-select: none;
+}
+.web-tab-btn:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.04);
+}
+.web-tab-btn.is-active {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+  background: rgba(34, 197, 94, 0.05);
+}
+
+/* ─── Botão custom de refresh do preview (P7.8) ──────────────────────
+   Substitui o showRefreshButton interno do SandpackPreview (que não
+   disparava reload). Chama sandpack.refreshBrowser(). */
+.web-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.web-refresh-btn:hover {
+  background: var(--brand);
+  color: #fff;
+  border-color: var(--brand);
+}
+.web-refresh-btn:active {
+  transform: scale(0.97);
+}
+
 /* ─── Mentor bubble (mesmo padrão do modo clássico) ─────────────────── */
 .web-mentor-cta {
   padding: 14px 0;
@@ -157,4 +217,7 @@
     border-bottom: 0;
   }
   .web-pane-header { font-size: 0.8rem; padding: 6px 10px; }
+  /* P7.8: tabs do editor mais compactas no celular */
+  .web-tab-btn { padding: 6px 10px; font-size: 0.72rem; }
+  .web-refresh-btn { padding: 3px 8px; font-size: 0.7rem; }
 }
