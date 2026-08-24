@@ -61,9 +61,10 @@ TERMINAL_HOST = os.environ.get('TERMINAL_HOST', '127.0.0.1')
 PISTON_WS_URL = os.environ.get('PISTON_WS_URL', 'ws://127.0.0.1:2000/api/v2/connect')
 PISTON_HTTP_URL = os.environ.get('PISTON_URL', 'http://127.0.0.1:2000/api/v2')
 MAX_CODE_CHARS = 5000
-PISTON_TIMEOUT_MS = 5000  # mesmo do dev_server.py
+PISTON_TIMEOUT_MS = 300_000      # 5min — sessão interativa, aluno lê/digita
+PISTON_COMPILE_TIMEOUT_MS = 10_000  # 10s — compila rápidos (C/Rust)
 RATE_LIMIT_INTERVAL_S = 2.0
-IDLE_TIMEOUT_S = 120  # aluno abandonou → fecha
+IDLE_TIMEOUT_S = 120             # 2min — aluno abandonou → fecha
 PING_INTERVAL_S = 30
 LOG_DIR = '/var/log/leitor-terminal'
 
@@ -257,6 +258,7 @@ async def handle_browser(ws):
             'version': version,
             'files': [{'content': code}],
             'run_timeout': PISTON_TIMEOUT_MS,
+            'compile_timeout': PISTON_COMPILE_TIMEOUT_MS,
         }
         await piston_ws.send(json.dumps(piston_init))
         log.info(
@@ -332,6 +334,7 @@ async def relay_browser_to_piston(browser_ws, piston_ws):
                 raw = await asyncio.wait_for(browser_ws.recv(), timeout=IDLE_TIMEOUT_S)
             except asyncio.TimeoutError:
                 # Aluno abandonou — manda SIGKILL pro Piston e fecha
+                log.warning(f'IDLE_TIMEOUT after {IDLE_TIMEOUT_S}s — killing piston')
                 try:
                     await piston_ws.send(json.dumps({'type': 'signal', 'signal': 'SIGKILL'}))
                 except Exception:
