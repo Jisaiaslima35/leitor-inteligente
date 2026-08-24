@@ -132,6 +132,12 @@ export function DevPage({ book, onBack }: DevPageProps) {
   const [useTerminal, setUseTerminal] = useState(false)
   const [terminalSession, setTerminalSession] = useState<TerminalSession | null>(null)
   const [terminalConnecting, setTerminalConnecting] = useState(false)
+  // 24/08/2026 (P3.8 mobile): input bar nativa abaixo do xterm. No celular o
+  // teclado virtual do Android/iOS não consegue injetar chars no textarea
+  // helper do xterm.js; o aluno digita num <input> HTML comum (corretor
+  // funcionando) e a gente manda o texto + \n via WS pro Piston.
+  const [terminalStdin, setTerminalStdin] = useState('')
+  const terminalStdinRef = useRef<HTMLInputElement | null>(null)
 
   // 23/08/2026 (P2.4b): PDF embutido — mesma lógica do ReaderPage.
   // signed URL vem do backend /signed-url-api/sign (TTL 60min).
@@ -304,6 +310,26 @@ export function DevPage({ book, onBack }: DevPageProps) {
     if (terminalSession) terminalSession.close()
     setTerminalSession(null)
   }, [terminalSession])
+
+  // 24/08/2026 (P3.8 mobile): envia texto digitado na input bar pro stdin do Piston.
+  // Concatena \n porque input() do Python só desbloqueia com newline.
+  // Mantém o foco na input pra próximo input() — UX mobile natural.
+  const handleSendStdin = useCallback(() => {
+    const value = terminalStdin
+    if (!terminalSession || !value) return
+    terminalSession.sendStdin(value + '\n')
+    setTerminalStdin('')
+    // mantém foco pra próximo input() — fundamental no mobile
+    requestAnimationFrame(() => terminalStdinRef.current?.focus())
+  }, [terminalStdin, terminalSession])
+
+  // Submit com Enter na input bar (Enter puro envia; Shift+Enter permite multiline)
+  const handleStdinKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSendStdin()
+    }
+  }, [handleSendStdin])
 
   // Limpa session ao desmontar a página
   useEffect(() => {
@@ -685,6 +711,37 @@ export function DevPage({ book, onBack }: DevPageProps) {
             )}
           </header>
           <XtermTerminal session={terminalSession} />
+
+          {/* P3.8 mobile — input bar nativa abaixo do xterm. Aparece quando
+              a sessão WS tá ativa. Teclado virtual mobile funciona normal em
+              <input> HTML, ao contrário do textarea helper do xterm. */}
+          {terminalSession && (
+            <div className="dev-terminal-stdin">
+              <input
+                ref={terminalStdinRef}
+                type="text"
+                inputMode="text"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                placeholder="Digite sua resposta e toque em Enviar (Enter)…"
+                value={terminalStdin}
+                onChange={e => setTerminalStdin(e.target.value)}
+                onKeyDown={handleStdinKeyDown}
+                aria-label="Entrada para o terminal (stdin)"
+              />
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleSendStdin}
+                disabled={!terminalStdin}
+                title="Manda o texto + newline pro stdin (Enter)"
+              >
+                <Send size={16} /> <span className="label">Enviar</span>
+              </button>
+            </div>
+          )}
         </section>
       )}
 

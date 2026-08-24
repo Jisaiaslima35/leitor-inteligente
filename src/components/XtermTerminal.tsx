@@ -51,6 +51,11 @@ export function XtermTerminal({
       convertEol: true,        // \n sozinho já vira \r\n
       cursorStyle: 'block',
       allowProposedApi: true,
+      // Mobile: o textarea helper do xterm nem sempre foca em teclado virtual.
+      // Forçamos foco via click/touchstart (vide useInputBar no DevPage).
+      screenReaderMode: false,
+      // Disable focus loss when something else (like a <input>) is clicked
+      // on mobile — without this, the soft keyboard may dismiss immediately.
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
@@ -66,6 +71,15 @@ export function XtermTerminal({
     })
     ro.observe(containerRef.current)
 
+    // 24/08/2026 (P3.8 mobile): garantir foco do xterm ao tocar/clicar no container.
+    // Sem isso o textarea helper do xterm não pega foco em teclado virtual (Android/iOS
+    // mandam touch pro body, não pro textarea oculto).
+    const focusTerminal = () => {
+      try { term.focus() } catch { /* noop */ }
+    }
+    containerRef.current.addEventListener('touchstart', focusTerminal, { passive: true })
+    containerRef.current.addEventListener('click', focusTerminal)
+
     // Quando o aluno digita no terminal → manda stdin
     term.onData((data) => {
       if (sessionRef.current) {
@@ -75,6 +89,10 @@ export function XtermTerminal({
 
     return () => {
       ro.disconnect()
+      if (containerRef.current) {
+        containerRef.current.removeEventListener('touchstart', focusTerminal)
+        containerRef.current.removeEventListener('click', focusTerminal)
+      }
       term.dispose()
       termRef.current = null
       fitRef.current = null
