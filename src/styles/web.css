@@ -1,0 +1,160 @@
+/* web.css — Modo "Projeto Web" (Sandpack) — Lei tor Inteligente (P7)
+   ISAÍAS: 24/08/2026. Tema dark consistente com o dev.css. */
+
+/* ─── Container raiz ────────────────────────────────────────────────── */
+.web-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.web-mode-loading,
+.web-mode-empty,
+.web-mode-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 60px 20px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  color: var(--muted);
+  text-align: center;
+}
+.web-mode-error { color: #fca5a5; border-color: #dc2626; }
+
+/* ─── Tabs mobile ───────────────────────────────────────────────────── */
+.web-mobile-tabs {
+  display: none;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-elev);
+}
+.web-tab {
+  flex: 1;
+  padding: 12px;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.web-tab.is-active {
+  background: var(--brand);
+  color: #fff;
+}
+.web-tab:not(.is-active):hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+/* ─── Sandpack layout split ─────────────────────────────────────────── */
+.web-sandpack {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--bg-elev);
+  min-height: 480px;
+}
+.web-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.web-pane-editor {
+  border-right: 1px solid var(--line);
+}
+.web-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  min-height: 36px;
+}
+.web-pane-preview {
+  background: #ffffff;
+}
+.web-pane-preview .web-pane-header {
+  color: #333;
+  background: #f8f8f8;
+  border-bottom: 1px solid #e5e5e5;
+}
+.web-save-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.web-save-status svg { animation: spin 1s linear infinite; }
+
+/* ─── Mentor bubble (mesmo padrão do modo clássico) ─────────────────── */
+.web-mentor-cta {
+  padding: 14px 0;
+}
+.web-mentor-btn {
+  width: 100%;
+  padding: 14px;
+  font-size: 1rem;
+}
+.web-mentor-bubble {
+  background: linear-gradient(135deg, var(--bg-elev) 0%, var(--bg) 100%);
+  border: 1px solid var(--brand);
+  border-radius: 14px;
+  padding: 16px;
+}
+.web-mentor-bubble h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+  color: var(--brand);
+}
+.web-mentor-bubble p {
+  margin: 0;
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+.web-mentor-loading p { color: var(--muted); }
+.web-mentor-loading svg { animation: spin 1s linear infinite; vertical-align: middle; margin-right: 4px; }
+.web-mentor-err { border-color: #dc2626; }
+.web-mentor-err p { color: #fca5a5; margin-bottom: 10px; }
+
+/* ─── Mobile (<= 720px) ─────────────────────────────────────────────── */
+@media (max-width: 720px) {
+  .web-mobile-tabs {
+    display: flex;
+  }
+  .web-sandpack {
+    grid-template-columns: 1fr;
+    min-height: 600px;
+  }
+  .web-sandpack .web-pane {
+    display: none;
+  }
+  .web-sandpack.show-code .web-pane-editor { display: flex; }
+  .web-sandpack.show-preview .web-pane-preview { display: flex; }
+  .web-pane-editor {
+    border-right: 0;
+    border-bottom: 0;
+  }
+  .web-pane-header { font-size: 0.8rem; padding: 6px 10px; }
+}

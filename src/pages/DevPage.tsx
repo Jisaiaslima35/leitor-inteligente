@@ -20,10 +20,16 @@
 // Sem persistência de execuções: histórico fica em sessionStorage, some ao recarregar.
 // Posição de leitura do PDF: NÃO persiste (não confundir com o progresso do Reader).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import { BookOpen, ChevronLeft, ChevronRight, MessageCircle, Pause, Play, RefreshCw, Send, Sparkles, Terminal, Trash2, Code2, ZoomIn, ZoomOut } from 'lucide-react'
 import Editor from '@monaco-editor/react'
 import { PdfViewer } from '../components/PdfViewer'
+// 24/08/2026 (P7): Modo "Projeto Web" (HTML/CSS/JS) com Sandpack.
+// Lazy import → chunk do Sandpack só baixa quando o aluno escolhe essa opção
+// no dropdown. Bundle principal fica intacto.
+const WebSandpackPanel = lazy(() =>
+  import('../components/WebSandpackPanel').then(m => ({ default: m.default })),
+)
 import { useAuth } from '../lib/AuthContext'
 import { supabase, SUPABASE_READY } from '../lib/supabase'
 import type { Book } from '../domain/types'
@@ -54,7 +60,7 @@ async function fetchJson(url: string, init: RequestInit, timeoutMs: number) {
   }
 }
 
-type Lang = 'python' | 'javascript' | 'php'
+type Lang = 'python' | 'javascript' | 'php' | 'web'
 
 interface ExecResult {
   stdout: string
@@ -96,12 +102,16 @@ const STARTERS: Record<Lang, string> = {
   python: '# Bem-vindo à Sala Dev do Leitor!\nprint("oi dev")\nprint(2 + 2)\n',
   javascript: '// Bem-vindo à Sala Dev do Leitor!\nconsole.log("oi dev");\nconsole.log([1, 2, 3].reduce((a, b) => a + b));\n',
   php: '<?php\n// Bem-vindo à Sala Dev do Leitor!\necho "oi dev\\n";\necho 10 * 5;\n',
+  // 24/08/2026 (P7): web não usa Monaco nem `code` — templates ficam no WebSandpackPanel.
+  web: '',
 }
 
 const LANG_LABEL: Record<Lang, string> = {
   python: 'Python 3.11',
   javascript: 'JavaScript (Node 20)',
   php: 'PHP 8.2',
+  // 24/08/2026 (P7): projeto web client-side, sem Piston, sem backend.
+  web: 'Projeto Web (HTML/CSS/JS)',
 }
 
 const MAX_CODE_CHARS = 5000
@@ -125,6 +135,13 @@ export function DevPage({ book, onBack }: DevPageProps) {
   const [feedbackLoading, setFeedbackLoading] = useState(false)
   const [rateUntil, setRateUntil] = useState<number>(0)
   const [globalError, setGlobalError] = useState<string | null>(null)
+  // 24/08/2026 (P7): estado do Mentor Dev no modo Web. Separado do /exec
+  // feedback pra não conflitar (web não tem stdout/stderr/exit_code).
+  const [webMentor, setWebMentor] = useState<{
+    text?: string
+    loading: boolean
+    error?: string
+  }>({ loading: false })
 
   // 23/08/2026 (P2.4b): PDF embutido — mesma lógica do ReaderPage.
   // signed URL vem do backend /signed-url-api/sign (TTL 60min).
@@ -245,6 +262,9 @@ export function DevPage({ book, onBack }: DevPageProps) {
 
   const handleLanguageChange = useCallback((next: Lang) => {
     setLanguage(next)
+    // 24/08/2026 (P7): modo web não usa o `code` (tem 3 files separados no Sandpack).
+    // Não sobrescrever — STARTERS[web] nem existe. Mantém o que tá.
+    if (next === 'web') return
     if (code.trim() === STARTERS[language].trim()) {
       setCode(STARTERS[next])
     }
@@ -263,6 +283,9 @@ export function DevPage({ book, onBack }: DevPageProps) {
 
   const handleRun = useCallback(async () => {
     if (execDisabled) return
+    // 24/08/2026 (P7): modo web não roda no Piston — Sandpack é client-side.
+    // O "run" no web mode é o preview ao vivo do Sandpack, sem backend.
+    if (language === 'web') return
     setGlobalError(null)
     const turnId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const turn: FeedbackTurn = {
@@ -374,6 +397,52 @@ export function DevPage({ book, onBack }: DevPageProps) {
       setFeedbackLoading(false)
     }
   }, [lastTurn, feedbackLoading, book?.id, book?.title])
+
+  // 24/08/2026 (P7): Mentor Dev no modo Web.
+  // Recebe payload já concatenado (HTML+CSS+JS) e truncado pelo WebSandpackPanel
+  // via truncateForFeedback() pra caber no limite de ~5000 chars do /feedback.
+  // Não tem stdout/stderr/exit_code — é análise estática de HTML/CSS/JS.
+  const handleAskWebMentor = useCallback(async (
+    payload: string,
+    meta: { truncated: boolean; reason?: string },
+  ) => {
+    if (webMentor.loading) return
+    setWebMentor({ loading: true })
+    setGlobalError(null)
+    try {
+      // Prompt contextualizado: avisa que é análise estática (sem stdout)
+      // e se houve truncamento, pra o Mentor não achar que tá incompleto.
+      const truncatedNote = meta.truncated
+        ? `\n\n[NOTA: o projeto do aluno foi truncado pra caber no limite — ${meta.reason ?? 'redução parcial'}. Analise o que recebeu.]`
+        : ''
+      const r = await fetchJson('/leitor-inteligente/dev-api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: `web-${book?.id || 'anon'}`,
+          language: 'web',
+          code: payload + truncatedNote,
+          stdout: '(projeto web — análise estática, sem execução)',
+          stderr: '',
+          exit_code: 0,
+          enunciado: `Análise pedagógica de um mini-projeto HTML/CSS/JS do livro "${book?.title || 'atual'}". O aluno quer feedback sobre estrutura HTML, estilização CSS e lógica JS.`,
+        }),
+      }, FEEDBACK_TIMEOUT_MS)
+
+      if (!r.ok || !r.json) {
+        const errMsg = r.timedOut
+          ? 'Mentor Dev demorou demais (>30s). Tente de novo — o 9Router pode estar trocando de provedor.'
+          : r.contentType && !r.contentType.includes('application/json')
+            ? `Backend retornou HTML em vez de JSON (${r.status}). Pode ser timeout do nginx.`
+            : (r.json?.error || `HTTP ${r.status}`)
+        setWebMentor({ loading: false, error: errMsg })
+        return
+      }
+      setWebMentor({ loading: false, text: r.json.feedback })
+    } catch (e: any) {
+      setWebMentor({ loading: false, error: `Erro de rede: ${e?.message || e}` })
+    }
+  }, [webMentor.loading, book?.id, book?.title])
 
   // P2.4: chat sobre livro — mesma chamada /<book.id>/semantic-api/semantic-ask do Reader
   const askProfessor = useCallback(async (raw: string) => {
@@ -538,6 +607,8 @@ export function DevPage({ book, onBack }: DevPageProps) {
             <option value="python">{LANG_LABEL.python}</option>
             <option value="javascript">{LANG_LABEL.javascript}</option>
             <option value="php">{LANG_LABEL.php}</option>
+            {/* 24/08/2026 (P7): projeto web client-side via Sandpack */}
+            <option value="web">{LANG_LABEL.web}</option>
           </select>
         </label>
         <span className={`dev-char-count ${overLimit ? 'is-over' : ''}`}>
@@ -548,8 +619,9 @@ export function DevPage({ book, onBack }: DevPageProps) {
           type="button"
           className="btn btn-primary dev-run-btn"
           onClick={handleRun}
-          disabled={execDisabled}
+          disabled={execDisabled || language === 'web'}
           title={
+            language === 'web' ? 'Modo Web — preview é ao vivo no Sandpack, sem botão Rodar' :
             overLimit ? 'Código acima de 5000 chars' :
             rateLockedMs > 0 ? `Aguarde ${(rateLockedMs/1000).toFixed(1)}s` :
             execLoading ? 'Rodando...' : 'Executar código (Ctrl+Enter)'
@@ -565,114 +637,147 @@ export function DevPage({ book, onBack }: DevPageProps) {
         </button>
       </div>
 
-      <section className="dev-editor-wrap">
-        <Editor
-          height="320px"
-          language={language === 'javascript' ? 'javascript' : language}
-          theme="vs-dark"
-          value={code}
-          onChange={(value) => setCode(value ?? '')}
-          onMount={(editor, monaco) => {
-            editorRef.current = editor
-            editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => handleRun())
-          }}
-          options={{
-            fontFamily: "'JetBrains Mono', 'SF Mono', Menlo, Consolas, 'Courier New', monospace",
-            fontSize: 14, lineHeight: 1.55,
-            minimap: { enabled: false }, scrollBeyondLastLine: false, tabSize: 2,
-            automaticLayout: true, wordWrap: 'on', renderLineHighlight: 'line',
-            padding: { top: 14, bottom: 14 },
-            scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
-          }}
-          loading={<div style={{ padding: 20, color: 'var(--muted)' }}>Carregando editor Monaco…</div>}
-        />
-      </section>
-
-      {/* P2.6 — output da última execução em destaque + botão Mentor grande */}
-      {lastTurn && (
-        <section className="dev-latest-result" aria-label="Última execução">
-          <h3 className="dev-section-title">
-            <Terminal size={16} /> Última execução · {LANG_LABEL[lastTurn.language]} ·{' '}
-            {new Date(lastTurn.ts).toLocaleTimeString('pt-BR')}
-            {lastTurn.result && (
-              <span className={`dev-turn-exit ${lastTurn.result.code === 0 ? 'is-ok' : 'is-err'}`}>
-                exit {lastTurn.result.code} · {lastTurn.result.wall_time}ms
-              </span>
-            )}
-          </h3>
-          {lastTurn.result && (
-            <div className="dev-latest-outputs">
-              {lastTurn.result.stdout && (
-                <div className={`dev-output ${lastTurn.result.code === 0 ? 'is-ok' : 'is-err'}`}>
-                  <h4>stdout</h4>
-                  <pre>{lastTurn.result.stdout}</pre>
-                </div>
-              )}
-              {!lastTurn.result.stdout && lastTurn.result.stderr && (
-                <div className="dev-output is-err">
-                  <h4>stderr</h4>
-                  <pre>{lastTurn.result.stderr}</pre>
-                </div>
-              )}
-              {lastTurn.result.stdout && lastTurn.result.stderr && (
-                <div className="dev-output dev-output-err">
-                  <h4>stderr</h4>
-                  <pre>{lastTurn.result.stderr}</pre>
-                </div>
-              )}
+      {/* 24/08/2026 (P7): modo Web renderiza o Sandpack panel (lazy + Suspense).
+          Modo clássico renderiza Monaco + output + histórico. */}
+      {language === 'web' ? (
+        <Suspense
+          fallback={
+            <div className="web-mode-loading">
+              <div className="spinner" />
+              <p>Carregando editor visual Sandpack…</p>
+            </div>
+          }
+        >
+          {userId && book ? (
+            <WebSandpackPanel
+              userId={userId}
+              bookId={book.id}
+              onAskMentor={handleAskWebMentor}
+              mentorFeedback={{
+                text: webMentor.text ?? '',
+                loading: webMentor.loading,
+                error: webMentor.error,
+              }}
+            />
+          ) : (
+            <div className="web-mode-empty">
+              Modo Projeto Web requer login e livro aberto. Clica em "Área Dev" a partir
+              de um livro de programação pra começar.
             </div>
           )}
+        </Suspense>
+      ) : (
+        <>
+          <section className="dev-editor-wrap">
+            <Editor
+              height="320px"
+              language={language === 'javascript' ? 'javascript' : language}
+              theme="vs-dark"
+              value={code}
+              onChange={(value) => setCode(value ?? '')}
+              onMount={(editor, monaco) => {
+                editorRef.current = editor
+                editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => handleRun())
+              }}
+              options={{
+                fontFamily: "'JetBrains Mono', 'SF Mono', Menlo, Consolas, 'Courier New', monospace",
+                fontSize: 14, lineHeight: 1.55,
+                minimap: { enabled: false }, scrollBeyondLastLine: false, tabSize: 2,
+                automaticLayout: true, wordWrap: 'on', renderLineHighlight: 'line',
+                padding: { top: 14, bottom: 14 },
+                scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+              }}
+              loading={<div style={{ padding: 20, color: 'var(--muted)' }}>Carregando editor Monaco…</div>}
+            />
+          </section>
 
-          {/* P2.6 — botão grande e visível "Pergunte ao Mentor" */}
-          <div className="dev-mentor-cta">
-            {lastTurn.feedback ? (
-              <div className="dev-mentor-bubble">
-                <h4><Sparkles size={14} /> Mentor Dev</h4>
-                <p>{lastTurn.feedback}</p>
-              </div>
-            ) : lastTurn.feedbackLoading ? (
-              <div className="dev-mentor-bubble dev-mentor-loading">
-                <h4><Sparkles size={14} /> Mentor Dev</h4>
-                <p><RefreshCw size={14} className="spin" /> Pensando (pode levar até 30s)...</p>
-              </div>
-            ) : lastTurn.feedbackError ? (
-              <div className="dev-mentor-bubble dev-mentor-err">
-                <h4><Sparkles size={14} /> Mentor Dev</h4>
-                <p>{lastTurn.feedbackError}</p>
-                <button className="btn btn-primary dev-mentor-btn" onClick={handleAskMentor}>
-                  <Sparkles size={16} /> Tentar de novo
-                </button>
-              </div>
-            ) : (
-              <button
-                className="btn btn-primary dev-mentor-btn"
-                onClick={handleAskMentor}
-                disabled={feedbackLoading || !lastTurn.result}
-              >
-                <Sparkles size={16} /> Pergunte ao Mentor Dev sobre este código
-              </button>
-            )}
-          </div>
-        </section>
-      )}
+          {/* P2.6 — output da última execução em destaque + botão Mentor grande */}
+          {lastTurn && (
+            <section className="dev-latest-result" aria-label="Última execução">
+              <h3 className="dev-section-title">
+                <Terminal size={16} /> Última execução · {LANG_LABEL[lastTurn.language]} ·{' '}
+                {new Date(lastTurn.ts).toLocaleTimeString('pt-BR')}
+                {lastTurn.result && (
+                  <span className={`dev-turn-exit ${lastTurn.result.code === 0 ? 'is-ok' : 'is-err'}`}>
+                    exit {lastTurn.result.code} · {lastTurn.result.wall_time}ms
+                  </span>
+                )}
+              </h3>
+              {lastTurn.result && (
+                <div className="dev-latest-outputs">
+                  {lastTurn.result.stdout && (
+                    <div className={`dev-output ${lastTurn.result.code === 0 ? 'is-ok' : 'is-err'}`}>
+                      <h4>stdout</h4>
+                      <pre>{lastTurn.result.stdout}</pre>
+                    </div>
+                  )}
+                  {!lastTurn.result.stdout && lastTurn.result.stderr && (
+                    <div className="dev-output is-err">
+                      <h4>stderr</h4>
+                      <pre>{lastTurn.result.stderr}</pre>
+                    </div>
+                  )}
+                  {lastTurn.result.stdout && lastTurn.result.stderr && (
+                    <div className="dev-output dev-output-err">
+                      <h4>stderr</h4>
+                      <pre>{lastTurn.result.stderr}</pre>
+                    </div>
+                  )}
+                </div>
+              )}
 
-      {/* Histórico compacto das execuções anteriores (sem botão inline, Mentor só na última) */}
-      {turns.length > 1 && (
-        <section className="dev-turns" aria-label="Execuções anteriores">
-          <h2 className="dev-section-title">
-            <Terminal size={16} /> Execuções anteriores ({turns.length - 1})
-          </h2>
-          {turns.slice(0, -1).slice().reverse().map(t => (
-            <DevTurn key={t.id} turn={t} />
-          ))}
-          <div ref={turnsBottomRef} />
-        </section>
-      )}
+              {/* P2.6 — botão grande e visível "Pergunte ao Mentor" */}
+              <div className="dev-mentor-cta">
+                {lastTurn.feedback ? (
+                  <div className="dev-mentor-bubble">
+                    <h4><Sparkles size={14} /> Mentor Dev</h4>
+                    <p>{lastTurn.feedback}</p>
+                  </div>
+                ) : lastTurn.feedbackLoading ? (
+                  <div className="dev-mentor-bubble dev-mentor-loading">
+                    <h4><Sparkles size={14} /> Mentor Dev</h4>
+                    <p><RefreshCw size={14} className="spin" /> Pensando (pode levar até 30s)...</p>
+                  </div>
+                ) : lastTurn.feedbackError ? (
+                  <div className="dev-mentor-bubble dev-mentor-err">
+                    <h4><Sparkles size={14} /> Mentor Dev</h4>
+                    <p>{lastTurn.feedbackError}</p>
+                    <button className="btn btn-primary dev-mentor-btn" onClick={handleAskMentor}>
+                      <Sparkles size={16} /> Tentar de novo
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    className="btn btn-primary dev-mentor-btn"
+                    onClick={handleAskMentor}
+                    disabled={feedbackLoading || !lastTurn.result}
+                  >
+                    <Sparkles size={16} /> Pergunte ao Mentor Dev sobre este código
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
 
-      {turns.length === 0 && (
-        <div className="dev-empty">
-          Nenhuma execução ainda. Escreve código acima e clica em <strong>Rodar</strong>.
-        </div>
+          {/* Histórico compacto das execuções anteriores (sem botão inline, Mentor só na última) */}
+          {turns.length > 1 && (
+            <section className="dev-turns" aria-label="Execuções anteriores">
+              <h2 className="dev-section-title">
+                <Terminal size={16} /> Execuções anteriores ({turns.length - 1})
+              </h2>
+              {turns.slice(0, -1).slice().reverse().map(t => (
+                <DevTurn key={t.id} turn={t} />
+              ))}
+              <div ref={turnsBottomRef} />
+            </section>
+          )}
+
+          {turns.length === 0 && (
+            <div className="dev-empty">
+              Nenhuma execução ainda. Escreve código acima e clica em <strong>Rodar</strong>.
+            </div>
+          )}
+        </>
       )}
     </div>
   )
