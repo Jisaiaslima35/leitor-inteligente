@@ -85,6 +85,101 @@
 .dev-char-count.is-over { color: #fca5a5; font-weight: 600; }
 .dev-run-btn { display: inline-flex; align-items: center; gap: 6px; min-width: 110px; justify-content: center; }
 
+/* 24/08/2026 (P3): toggle do modo terminal vivo (WebSocket).
+   Fica entre o language picker e o char-count no toolbar. */
+.dev-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.84rem;
+  color: var(--ink-soft);
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+}
+.dev-mode-toggle:hover { border-color: rgba(212, 175, 55, 0.4); }
+.dev-mode-toggle input { margin: 0; accent-color: var(--brand); cursor: pointer; }
+
+/* 24/08/2026 (P3): painel do terminal xterm.js dentro da Sala Dev. */
+.dev-terminal-panel {
+  background: #0e1116;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.xterm-host {
+  background: #0e1116;
+  border-radius: 8px;
+  padding: 4px 0;
+}
+.xterm-host .xterm {
+  padding: 4px 8px;
+}
+.dev-terminal-panel .dev-section-title {
+  margin: 0;
+  color: var(--ink-soft);
+}
+
+/* 24/08/2026 (P3.8 mobile): input bar nativa abaixo do xterm. No celular o
+   teclado virtual não injeta chars no textarea helper do xterm, então o aluno
+   digita num <input> HTML comum (corretor/autocorrect funcionando) e a gente
+   manda pro stdin via WS. No desktop funciona como atalho também (Enter envia). */
+.dev-terminal-stdin {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #1f2329;
+}
+.dev-terminal-stdin input {
+  flex: 1;
+  min-width: 0;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  color: #e6edf3;
+  padding: 10px 12px;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.4;
+  outline: none;
+}
+.dev-terminal-stdin input:focus {
+  border-color: var(--brand, #d4af37);
+  box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.18);
+}
+.dev-terminal-stdin input::placeholder {
+  color: #6e7681;
+}
+.dev-terminal-stdin .btn {
+  flex-shrink: 0;
+}
+@media (max-width: 720px) {
+  .dev-terminal-stdin {
+    flex-direction: row;
+    gap: 6px;
+  }
+  .dev-terminal-stdin input {
+    font-size: 16px; /* iOS não dá zoom em inputs >=16px */
+    padding: 12px 10px;
+  }
+  .dev-terminal-stdin .btn .label {
+    display: none; /* no mobile só mostra o ícone */
+  }
+}
+@media (max-width: 420px) {
+  .dev-terminal-stdin input {
+    font-size: 15px;
+  }
+}
+
 .dev-editor-wrap {
   background: #0e1116;
   border: 1px solid var(--line);

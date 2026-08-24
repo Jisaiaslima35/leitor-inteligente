@@ -54,6 +54,11 @@ LANG_MAP = {
     'javascript':('javascript', '20.11.1'),  # Piston chama Node de "javascript"
     'js':        ('javascript', '20.11.1'),
     'node':      ('javascript', '20.11.1'),
+    # 24/08/2026 (P5 Isaías): SQL e Java adicionados. Piston via
+    # POST /api/v2/packages instalou sqlite3 3.36.0 e java 15.0.2.
+    'sql':       ('sqlite3', '3.36.0'),
+    'sqlite':    ('sqlite3', '3.36.0'),
+    'java':      ('java', '15.0.2'),
 }
 
 # ─── Estado em memória ────────────────────────────────────────────────────
@@ -122,7 +127,7 @@ def call_hermes_mentor(prompt: str) -> str:
         with open(soul_path, 'r', encoding='utf-8') as f:
             soul = f.read()
     except FileNotFoundError:
-        soul = 'Você é o Mentor Dev, persona que ensina PHP/Python/JavaScript.'
+        soul = 'Você é o Mentor Dev, persona que ensina PHP, Python, JavaScript, SQL (SQLite) e Java na Sala Dev do Leitor Inteligente.'
 
     # Carrega env vars do profile .env
     api_key = ''

@@ -49,26 +49,46 @@ export interface Book {
   categoria: Categoria
 }
 
-/** Categorias oficiais do Leitor. Default no Supabase: 'outros'
- *  (admin tem que marcar explicitamente como 'programacao' pra
- *  habilitar Sala Dev). */
+/** Categorias oficiais do Leitor.
+ *  24/08/2026 (P4 Isaías): reduzido pra 2 categorias.
+ *  24/08/2026 (P8 Isaías): expandido pra 7 valores (6 novos pro usuário
+ *  escolher no radio obrigatório). 'comum' continua existindo pra não
+ *  quebrar os 19 livros legados do P4. Schema Supabase:
+ *  CHECK constraint cobre todos os 7 valores.
+ *
+ *    comum         → livro comum (legado P4, fica como bucket genérico)
+ *    programacao   → Tecnologia ou Programação (Sala Dev habilitada)
+ *    tecnologia    → Tecnologia Geral (sem Área Dev por enquanto)
+ *    gospel        → literatura gospel/evangélica
+ *    literatura    → ficção/clássicos/poesia
+ *    autoajuda     → desenvolvimento pessoal/produtividade
+ *    outros        → catch-all (espécies não mapeadas)
+ */
 export type Categoria =
-  | 'programacao'   // Sala Dev habilitada
-  | 'tecnologia'    // futuro: tech geral, sem playground de código
+  | 'comum'
+  | 'programacao'
+  | 'tecnologia'
   | 'gospel'
   | 'literatura'
   | 'autoajuda'
   | 'outros'
 
 export const CATEGORIAS: Categoria[] = [
-  'programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros',
+  'comum',
+  'programacao',
+  'tecnologia',
+  'gospel',
+  'literatura',
+  'autoajuda',
+  'outros',
 ]
 
 export const CATEGORIA_LABEL: Record<Categoria, string> = {
-  programacao: 'Programação',
-  tecnologia: 'Tecnologia (geral)',
-  gospel: 'Gospel / Religioso',
-  literatura: 'Literatura',
-  autoajuda: 'Autoajuda',
+  comum: 'Livro comum',
+  programacao: 'Programação / Tecnologia',
+  tecnologia: 'Tecnologia Geral',
+  gospel: 'Gospel / Cristão',
+  literatura: 'Literatura / Ficção',
+  autoajuda: 'Autoajuda / Crescimento',
   outros: 'Outros',
 }

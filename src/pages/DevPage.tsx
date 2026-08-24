@@ -24,15 +24,16 @@ import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } fro
 import { BookOpen, ChevronLeft, ChevronRight, MessageCircle, Pause, Play, RefreshCw, Send, Sparkles, Terminal, Trash2, Code2, ZoomIn, ZoomOut } from 'lucide-react'
 import Editor from '@monaco-editor/react'
 import { PdfViewer } from '../components/PdfViewer'
-// 24/08/2026 (P7): Modo "Projeto Web" (HTML/CSS/JS) com Sandpack.
-// Lazy import → chunk do Sandpack só baixa quando o aluno escolhe essa opção
-// no dropdown. Bundle principal fica intacto.
-const WebSandpackPanel = lazy(() =>
-  import('../components/WebSandpackPanel').then(m => ({ default: m.default })),
-)
+import { XtermTerminal } from '../components/XtermTerminal'
+import { openTerminal, type TerminalSession } from '../lib/devSocket'
 import { useAuth } from '../lib/AuthContext'
 import { supabase, SUPABASE_READY } from '../lib/supabase'
 import type { Book } from '../domain/types'
+
+// P9 (24/08/2026): Sandpack pesado (~608KB), lazy load só quando seleciona "Projeto Web"
+const WebSandpackPanel = lazy(() =>
+  import('../components/WebSandpackPanel').then(m => ({ default: m.default })),
+)
 
 // Helper: fetch com timeout via AbortController. Devolve {ok, status, json, raw, contentType}.
 // Se Content-Type não for JSON (ex.: nginx 504 HTML), `json` é null e `raw` tem o HTML.
@@ -60,7 +61,7 @@ async function fetchJson(url: string, init: RequestInit, timeoutMs: number) {
   }
 }
 
-type Lang = 'python' | 'javascript' | 'php' | 'web'
+type Lang = 'python' | 'javascript' | 'php' | 'sql' | 'java' | 'web'
 
 interface ExecResult {
   stdout: string
@@ -102,6 +103,10 @@ const STARTERS: Record<Lang, string> = {
   python: '# Bem-vindo à Sala Dev do Leitor!\nprint("oi dev")\nprint(2 + 2)\n',
   javascript: '// Bem-vindo à Sala Dev do Leitor!\nconsole.log("oi dev");\nconsole.log([1, 2, 3].reduce((a, b) => a + b));\n',
   php: '<?php\n// Bem-vindo à Sala Dev do Leitor!\necho "oi dev\\n";\necho 10 * 5;\n',
+  // 24/08/2026 (P5): SQL e Java habilitados no Piston via POST /api/v2/packages
+  // (sqlite3 3.36.0 e java 15.0.2). Backend LANG_MAP tem que casar.
+  sql: '-- Bem-vindo à Sala Dev do Leitor!\nSELECT \'oi dev\' AS msg, 2 + 2 AS soma;\n',
+  java: '// Bem-vindo à Sala Dev do Leitor!\npublic class Main {\n  public static void main(String[] args) {\n    System.out.println("oi dev");\n    System.out.println(10 * 5);\n  }\n}\n',
   // 24/08/2026 (P7): web não usa Monaco nem `code` — templates ficam no WebSandpackPanel.
   web: '',
 }
@@ -110,6 +115,8 @@ const LANG_LABEL: Record<Lang, string> = {
   python: 'Python 3.11',
   javascript: 'JavaScript (Node 20)',
   php: 'PHP 8.2',
+  sql: 'SQL (SQLite 3)',
+  java: 'Java 15',
   // 24/08/2026 (P7): projeto web client-side, sem Piston, sem backend.
   web: 'Projeto Web (HTML/CSS/JS)',
 }
@@ -135,13 +142,17 @@ export function DevPage({ book, onBack }: DevPageProps) {
   const [feedbackLoading, setFeedbackLoading] = useState(false)
   const [rateUntil, setRateUntil] = useState<number>(0)
   const [globalError, setGlobalError] = useState<string | null>(null)
-  // 24/08/2026 (P7): estado do Mentor Dev no modo Web. Separado do /exec
-  // feedback pra não conflitar (web não tem stdout/stderr/exit_code).
-  const [webMentor, setWebMentor] = useState<{
-    text?: string
-    loading: boolean
-    error?: string
-  }>({ loading: false })
+  // 24/08/2026 (P3): terminal vivo WebSocket — input() interativo.
+  // Default false = comportamento antigo (HTTP /exec) preservado.
+  const [useTerminal, setUseTerminal] = useState(false)
+  const [terminalSession, setTerminalSession] = useState<TerminalSession | null>(null)
+  const [terminalConnecting, setTerminalConnecting] = useState(false)
+  // 24/08/2026 (P3.8 mobile): input bar nativa abaixo do xterm. No celular o
+  // teclado virtual do Android/iOS não consegue injetar chars no textarea
+  // helper do xterm.js; o aluno digita num <input> HTML comum (corretor
+  // funcionando) e a gente manda o texto + \n via WS pro Piston.
+  const [terminalStdin, setTerminalStdin] = useState('')
+  const terminalStdinRef = useRef<HTMLInputElement | null>(null)
 
   // 23/08/2026 (P2.4b): PDF embutido — mesma lógica do ReaderPage.
   // signed URL vem do backend /signed-url-api/sign (TTL 60min).
@@ -262,13 +273,22 @@ export function DevPage({ book, onBack }: DevPageProps) {
 
   const handleLanguageChange = useCallback((next: Lang) => {
     setLanguage(next)
-    // 24/08/2026 (P7): modo web não usa o `code` (tem 3 files separados no Sandpack).
-    // Não sobrescrever — STARTERS[web] nem existe. Mantém o que tá.
-    if (next === 'web') return
     if (code.trim() === STARTERS[language].trim()) {
       setCode(STARTERS[next])
     }
   }, [code, language])
+
+  // P9 (24/08/2026): ao entrar no modo web, garante que o flag do terminal vivo
+  // tá desligado. Se o usuário tinha sessão WS aberta, encerra. Sem isso o
+  // checkbox some mas o estado fica true, e se voltar pra Python já abre WS
+  // direto sem ele pedir.
+  useEffect(() => {
+    if (language === 'web' && useTerminal) {
+      setUseTerminal(false)
+      if (terminalSession) handleCloseTerminal()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [language])
 
   const handleClearAll = useCallback(() => {
     if (!confirm('Limpar histórico de execuções desta sessão?')) return
@@ -281,11 +301,71 @@ export function DevPage({ book, onBack }: DevPageProps) {
     editorRef.current?.focus()
   }, [])
 
+  // 24/08/2026 (P3): abre WS pro terminal_server.py:2005 com JWT Supabase +
+  // categoria programacao gate. Sessão fica viva até exit ou disconnect.
+  const handleRunTerminal = useCallback(async () => {
+    if (!book) {
+      setGlobalError('Abra um livro de programação pela biblioteca pra usar o terminal.')
+      setUseTerminal(false)
+      return
+    }
+    if (terminalConnecting || terminalSession) return
+    setGlobalError(null)
+    setTerminalConnecting(true)
+    try {
+      const session = await openTerminal({
+        slug: book.id,
+        language,
+        code,
+        getToken: async () => {
+          const { data } = await supabase.auth.getSession()
+          return data.session?.access_token ?? null
+        },
+      })
+      // Quando o backend fechar, libera o estado
+      session.on('close', () => setTerminalSession(prev => prev))
+      setTerminalSession(session)
+    } catch (e: any) {
+      setGlobalError(`Terminal não conectou: ${e?.message || e}`)
+      setUseTerminal(false)
+    } finally {
+      setTerminalConnecting(false)
+    }
+  }, [book, language, code, terminalConnecting, terminalSession])
+
+  const handleCloseTerminal = useCallback(() => {
+    if (terminalSession) terminalSession.close()
+    setTerminalSession(null)
+  }, [terminalSession])
+
+  // 24/08/2026 (P3.8 mobile): envia texto digitado na input bar pro stdin do Piston.
+  // Concatena \n porque input() do Python só desbloqueia com newline.
+  // Mantém o foco na input pra próximo input() — UX mobile natural.
+  const handleSendStdin = useCallback(() => {
+    const value = terminalStdin
+    if (!terminalSession || !value) return
+    terminalSession.sendStdin(value + '\n')
+    setTerminalStdin('')
+    // mantém foco pra próximo input() — fundamental no mobile
+    requestAnimationFrame(() => terminalStdinRef.current?.focus())
+  }, [terminalStdin, terminalSession])
+
+  // Submit com Enter na input bar (Enter puro envia; Shift+Enter permite multiline)
+  const handleStdinKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSendStdin()
+    }
+  }, [handleSendStdin])
+
+  // Limpa session ao desmontar a página
+  useEffect(() => {
+    return () => { terminalSession?.close() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const handleRun = useCallback(async () => {
     if (execDisabled) return
-    // 24/08/2026 (P7): modo web não roda no Piston — Sandpack é client-side.
-    // O "run" no web mode é o preview ao vivo do Sandpack, sem backend.
-    if (language === 'web') return
     setGlobalError(null)
     const turnId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const turn: FeedbackTurn = {
@@ -398,49 +478,42 @@ export function DevPage({ book, onBack }: DevPageProps) {
     }
   }, [lastTurn, feedbackLoading, book?.id, book?.title])
 
-  // 24/08/2026 (P7): Mentor Dev no modo Web.
-  // Recebe payload já concatenado (HTML+CSS+JS) e truncado pelo WebSandpackPanel
-  // via truncateForFeedback() pra caber no limite de ~5000 chars do /feedback.
-  // Não tem stdout/stderr/exit_code — é análise estática de HTML/CSS/JS.
+  // P9 (24/08/2026): Mentor Dev para o modo Web — análise estática de HTML/CSS/JS.
+  // O WebSandpackPanel entrega um payload string já pronto (concatenado + truncado
+  // por lá); só repassamos pro backend /feedback.
+  const [webMentor, setWebMentor] = useState<{
+    text?: string
+    loading: boolean
+    error?: string
+  }>({ loading: false })
   const handleAskWebMentor = useCallback(async (
     payload: string,
     meta: { truncated: boolean; reason?: string },
   ) => {
     if (webMentor.loading) return
     setWebMentor({ loading: true })
-    setGlobalError(null)
     try {
-      // Prompt contextualizado: avisa que é análise estática (sem stdout)
-      // e se houve truncamento, pra o Mentor não achar que tá incompleto.
-      const truncatedNote = meta.truncated
-        ? `\n\n[NOTA: o projeto do aluno foi truncado pra caber no limite — ${meta.reason ?? 'redução parcial'}. Analise o que recebeu.]`
-        : ''
-      const r = await fetchJson('/leitor-inteligente/dev-api/feedback', {
+      const res = await fetch(`${import.meta.env.BASE_URL}dev-api/feedback`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          session_id: `web-${book?.id || 'anon'}`,
           language: 'web',
-          code: payload + truncatedNote,
-          stdout: '(projeto web — análise estática, sem execução)',
-          stderr: '',
-          exit_code: 0,
-          enunciado: `Análise pedagógica de um mini-projeto HTML/CSS/JS do livro "${book?.title || 'atual'}". O aluno quer feedback sobre estrutura HTML, estilização CSS e lógica JS.`,
+          code: payload,
+          truncated: meta.truncated,
+          truncated_reason: meta.reason,
+          book_id: book?.id,
+          book_title: book?.title,
         }),
-      }, FEEDBACK_TIMEOUT_MS)
-
-      if (!r.ok || !r.json) {
-        const errMsg = r.timedOut
-          ? 'Mentor Dev demorou demais (>30s). Tente de novo — o 9Router pode estar trocando de provedor.'
-          : r.contentType && !r.contentType.includes('application/json')
-            ? `Backend retornou HTML em vez de JSON (${r.status}). Pode ser timeout do nginx.`
-            : (r.json?.error || `HTTP ${r.status}`)
-        setWebMentor({ loading: false, error: errMsg })
+      })
+      const ct = res.headers.get('content-type') || ''
+      const json = ct.includes('application/json') ? await res.json() : null
+      if (!res.ok || !json) {
+        setWebMentor({ loading: false, error: `HTTP ${res.status}: ${json?.error || 'falha'}` })
         return
       }
-      setWebMentor({ loading: false, text: r.json.feedback })
+      setWebMentor({ loading: false, text: json.feedback || json.text || '' })
     } catch (e: any) {
-      setWebMentor({ loading: false, error: `Erro de rede: ${e?.message || e}` })
+      setWebMentor({ loading: false, error: e?.message || String(e) })
     }
   }, [webMentor.loading, book?.id, book?.title])
 
@@ -607,38 +680,72 @@ export function DevPage({ book, onBack }: DevPageProps) {
             <option value="python">{LANG_LABEL.python}</option>
             <option value="javascript">{LANG_LABEL.javascript}</option>
             <option value="php">{LANG_LABEL.php}</option>
+            <option value="sql">{LANG_LABEL.sql}</option>
+            <option value="java">{LANG_LABEL.java}</option>
             {/* 24/08/2026 (P7): projeto web client-side via Sandpack */}
             <option value="web">{LANG_LABEL.web}</option>
           </select>
         </label>
-        <span className={`dev-char-count ${overLimit ? 'is-over' : ''}`}>
-          {charsCount} / {MAX_CODE_CHARS} chars
-          {overLimit && ' — acima do limite'}
-        </span>
-        <button
-          type="button"
-          className="btn btn-primary dev-run-btn"
-          onClick={handleRun}
-          disabled={execDisabled || language === 'web'}
-          title={
-            language === 'web' ? 'Modo Web — preview é ao vivo no Sandpack, sem botão Rodar' :
-            overLimit ? 'Código acima de 5000 chars' :
-            rateLockedMs > 0 ? `Aguarde ${(rateLockedMs/1000).toFixed(1)}s` :
-            execLoading ? 'Rodando...' : 'Executar código (Ctrl+Enter)'
-          }
-        >
-          {execLoading ? (
-            <><RefreshCw size={16} className="spin" /> Rodando...</>
-          ) : rateLockedMs > 0 ? (
-            <><RefreshCw size={16} /> Calma {Math.ceil(rateLockedMs/1000)}s</>
-          ) : (
-            <><Play size={16} /> Rodar</>
-          )}
-        </button>
+        {language !== 'web' && (
+          <label className="dev-mode-toggle" title="Modo terminal: input() roda em tempo real (WebSocket). Modo clássico: roda e devolve output">
+            <input
+              type="checkbox"
+              checked={useTerminal}
+              onChange={e => {
+                const next = e.target.checked
+                setUseTerminal(next)
+                if (!next && terminalSession) {
+                  handleCloseTerminal()
+                }
+              }}
+            />
+            <Terminal size={14} /> terminal vivo (input())
+          </label>
+        )}
+        {language !== 'web' && (
+          <span className={`dev-char-count ${overLimit ? 'is-over' : ''}`}>
+            {charsCount} / {MAX_CODE_CHARS} chars
+            {overLimit && ' — acima do limite'}
+          </span>
+        )}
+        {language !== 'web' && (
+          <button
+            type="button"
+            className="btn btn-primary dev-run-btn"
+            onClick={useTerminal ? handleRunTerminal : handleRun}
+            disabled={useTerminal ? (terminalConnecting || !!terminalSession || overLimit) : execDisabled}
+            title={
+              overLimit ? 'Código acima de 5000 chars' :
+              useTerminal ? (terminalConnecting ? 'Conectando...' : terminalSession ? 'Sessão já aberta' : 'Abrir terminal interativo') :
+              rateLockedMs > 0 ? `Aguarde ${(rateLockedMs/1000).toFixed(1)}s` :
+              execLoading ? 'Rodando...' : 'Executar código (Ctrl+Enter)'
+            }
+          >
+            {useTerminal ? (
+              terminalConnecting ? <><RefreshCw size={16} className="spin" /> Conectando…</>
+              : terminalSession ? <><Pause size={16} /> Rodando (terminal)</>
+              : <><Play size={16} /> Conectar terminal</>
+            ) : execLoading ? (
+              <><RefreshCw size={16} className="spin" /> Rodando...</>
+            ) : rateLockedMs > 0 ? (
+              <><RefreshCw size={16} /> Calma {Math.ceil(rateLockedMs/1000)}s</>
+            ) : (
+              <><Play size={16} /> Rodar</>
+            )}
+          </button>
+        )}
+        {language !== 'web' && useTerminal && terminalSession && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={handleCloseTerminal}
+            title="Encerra a sessão WS com o Piston"
+          >
+            <Pause size={14} /> Encerrar terminal
+          </button>
+        )}
       </div>
 
-      {/* 24/08/2026 (P7): modo Web renderiza o Sandpack panel (lazy + Suspense).
-          Modo clássico renderiza Monaco + output + histórico. */}
       {language === 'web' ? (
         <Suspense
           fallback={
@@ -667,117 +774,167 @@ export function DevPage({ book, onBack }: DevPageProps) {
           )}
         </Suspense>
       ) : (
-        <>
-          <section className="dev-editor-wrap">
-            <Editor
-              height="320px"
-              language={language === 'javascript' ? 'javascript' : language}
-              theme="vs-dark"
-              value={code}
-              onChange={(value) => setCode(value ?? '')}
-              onMount={(editor, monaco) => {
-                editorRef.current = editor
-                editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => handleRun())
-              }}
-              options={{
-                fontFamily: "'JetBrains Mono', 'SF Mono', Menlo, Consolas, 'Courier New', monospace",
-                fontSize: 14, lineHeight: 1.55,
-                minimap: { enabled: false }, scrollBeyondLastLine: false, tabSize: 2,
-                automaticLayout: true, wordWrap: 'on', renderLineHighlight: 'line',
-                padding: { top: 14, bottom: 14 },
-                scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
-              }}
-              loading={<div style={{ padding: 20, color: 'var(--muted)' }}>Carregando editor Monaco…</div>}
-            />
-          </section>
+        <section className="dev-editor-wrap">
+          <Editor
+            height="320px"
+            language={language === 'javascript' ? 'javascript' : language}
+            theme="vs-dark"
+            value={code}
+            onChange={(value) => setCode(value ?? '')}
+            onMount={(editor, monaco) => {
+              editorRef.current = editor
+              editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => handleRun())
+            }}
+            options={{
+              fontFamily: "'JetBrains Mono', 'SF Mono', Menlo, Consolas, 'Courier New', monospace",
+              fontSize: 14, lineHeight: 1.55,
+              minimap: { enabled: false }, scrollBeyondLastLine: false, tabSize: 2,
+              automaticLayout: true, wordWrap: 'on', renderLineHighlight: 'line',
+              padding: { top: 14, bottom: 14 },
+              scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+            }}
+            loading={<div style={{ padding: 20, color: 'var(--muted)' }}>Carregando editor Monaco…</div>}
+          />
+        </section>
+      )}
 
-          {/* P2.6 — output da última execução em destaque + botão Mentor grande */}
-          {lastTurn && (
-            <section className="dev-latest-result" aria-label="Última execução">
-              <h3 className="dev-section-title">
-                <Terminal size={16} /> Última execução · {LANG_LABEL[lastTurn.language]} ·{' '}
-                {new Date(lastTurn.ts).toLocaleTimeString('pt-BR')}
-                {lastTurn.result && (
-                  <span className={`dev-turn-exit ${lastTurn.result.code === 0 ? 'is-ok' : 'is-err'}`}>
-                    exit {lastTurn.result.code} · {lastTurn.result.wall_time}ms
-                  </span>
-                )}
-              </h3>
-              {lastTurn.result && (
-                <div className="dev-latest-outputs">
-                  {lastTurn.result.stdout && (
-                    <div className={`dev-output ${lastTurn.result.code === 0 ? 'is-ok' : 'is-err'}`}>
-                      <h4>stdout</h4>
-                      <pre>{lastTurn.result.stdout}</pre>
-                    </div>
-                  )}
-                  {!lastTurn.result.stdout && lastTurn.result.stderr && (
-                    <div className="dev-output is-err">
-                      <h4>stderr</h4>
-                      <pre>{lastTurn.result.stderr}</pre>
-                    </div>
-                  )}
-                  {lastTurn.result.stdout && lastTurn.result.stderr && (
-                    <div className="dev-output dev-output-err">
-                      <h4>stderr</h4>
-                      <pre>{lastTurn.result.stderr}</pre>
-                    </div>
-                  )}
-                </div>
-              )}
+      {/* 24/08/2026 (P3): terminal interativo WebSocket. Aparece SÓ quando
+          useTerminal=true. xterm.js cuida de stdin/stdout ao vivo. */}
+      {useTerminal && (
+        <section className="dev-terminal-panel" aria-label="Terminal interativo">
+          <header className="dev-section-title">
+            <Terminal size={16} /> Terminal ao vivo — input() em tempo real
+            {terminalSession && (
+              <span className="dev-mode-toggle" style={{ marginLeft: 'auto' }}>
+                <span style={{ color: 'var(--brand)' }}>● conectado</span>
+              </span>
+            )}
+            {!terminalSession && !terminalConnecting && (
+              <span className="dev-mode-toggle" style={{ marginLeft: 'auto', color: 'var(--muted)' }}>
+                clique em “Conectar terminal”
+              </span>
+            )}
+          </header>
+          <XtermTerminal session={terminalSession} />
 
-              {/* P2.6 — botão grande e visível "Pergunte ao Mentor" */}
-              <div className="dev-mentor-cta">
-                {lastTurn.feedback ? (
-                  <div className="dev-mentor-bubble">
-                    <h4><Sparkles size={14} /> Mentor Dev</h4>
-                    <p>{lastTurn.feedback}</p>
-                  </div>
-                ) : lastTurn.feedbackLoading ? (
-                  <div className="dev-mentor-bubble dev-mentor-loading">
-                    <h4><Sparkles size={14} /> Mentor Dev</h4>
-                    <p><RefreshCw size={14} className="spin" /> Pensando (pode levar até 30s)...</p>
-                  </div>
-                ) : lastTurn.feedbackError ? (
-                  <div className="dev-mentor-bubble dev-mentor-err">
-                    <h4><Sparkles size={14} /> Mentor Dev</h4>
-                    <p>{lastTurn.feedbackError}</p>
-                    <button className="btn btn-primary dev-mentor-btn" onClick={handleAskMentor}>
-                      <Sparkles size={16} /> Tentar de novo
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    className="btn btn-primary dev-mentor-btn"
-                    onClick={handleAskMentor}
-                    disabled={feedbackLoading || !lastTurn.result}
-                  >
-                    <Sparkles size={16} /> Pergunte ao Mentor Dev sobre este código
-                  </button>
-                )}
-              </div>
-            </section>
-          )}
-
-          {/* Histórico compacto das execuções anteriores (sem botão inline, Mentor só na última) */}
-          {turns.length > 1 && (
-            <section className="dev-turns" aria-label="Execuções anteriores">
-              <h2 className="dev-section-title">
-                <Terminal size={16} /> Execuções anteriores ({turns.length - 1})
-              </h2>
-              {turns.slice(0, -1).slice().reverse().map(t => (
-                <DevTurn key={t.id} turn={t} />
-              ))}
-              <div ref={turnsBottomRef} />
-            </section>
-          )}
-
-          {turns.length === 0 && (
-            <div className="dev-empty">
-              Nenhuma execução ainda. Escreve código acima e clica em <strong>Rodar</strong>.
+          {/* P3.8 mobile — input bar nativa abaixo do xterm. Aparece quando
+              a sessão WS tá ativa. Teclado virtual mobile funciona normal em
+              <input> HTML, ao contrário do textarea helper do xterm. */}
+          {terminalSession && (
+            <div className="dev-terminal-stdin">
+              <input
+                ref={terminalStdinRef}
+                type="text"
+                inputMode="text"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                placeholder="Digite sua resposta e toque em Enviar (Enter)…"
+                value={terminalStdin}
+                onChange={e => setTerminalStdin(e.target.value)}
+                onKeyDown={handleStdinKeyDown}
+                aria-label="Entrada para o terminal (stdin)"
+              />
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleSendStdin}
+                disabled={!terminalStdin}
+                title="Manda o texto + newline pro stdin (Enter)"
+              >
+                <Send size={16} /> <span className="label">Enviar</span>
+              </button>
             </div>
           )}
-        </>
+        </section>
+      )}
+
+      {/* P2.6 — output da última execução em destaque + botão Mentor grande */}
+      {lastTurn && (
+        <section className="dev-latest-result" aria-label="Última execução">
+          <h3 className="dev-section-title">
+            <Terminal size={16} /> Última execução · {LANG_LABEL[lastTurn.language]} ·{' '}
+            {new Date(lastTurn.ts).toLocaleTimeString('pt-BR')}
+            {lastTurn.result && (
+              <span className={`dev-turn-exit ${lastTurn.result.code === 0 ? 'is-ok' : 'is-err'}`}>
+                exit {lastTurn.result.code} · {lastTurn.result.wall_time}ms
+              </span>
+            )}
+          </h3>
+          {lastTurn.result && (
+            <div className="dev-latest-outputs">
+              {lastTurn.result.stdout && (
+                <div className={`dev-output ${lastTurn.result.code === 0 ? 'is-ok' : 'is-err'}`}>
+                  <h4>stdout</h4>
+                  <pre>{lastTurn.result.stdout}</pre>
+                </div>
+              )}
+              {!lastTurn.result.stdout && lastTurn.result.stderr && (
+                <div className="dev-output is-err">
+                  <h4>stderr</h4>
+                  <pre>{lastTurn.result.stderr}</pre>
+                </div>
+              )}
+              {lastTurn.result.stdout && lastTurn.result.stderr && (
+                <div className="dev-output dev-output-err">
+                  <h4>stderr</h4>
+                  <pre>{lastTurn.result.stderr}</pre>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* P2.6 — botão grande e visível "Pergunte ao Mentor" */}
+          <div className="dev-mentor-cta">
+            {lastTurn.feedback ? (
+              <div className="dev-mentor-bubble">
+                <h4><Sparkles size={14} /> Mentor Dev</h4>
+                <p>{lastTurn.feedback}</p>
+              </div>
+            ) : lastTurn.feedbackLoading ? (
+              <div className="dev-mentor-bubble dev-mentor-loading">
+                <h4><Sparkles size={14} /> Mentor Dev</h4>
+                <p><RefreshCw size={14} className="spin" /> Pensando (pode levar até 30s)...</p>
+              </div>
+            ) : lastTurn.feedbackError ? (
+              <div className="dev-mentor-bubble dev-mentor-err">
+                <h4><Sparkles size={14} /> Mentor Dev</h4>
+                <p>{lastTurn.feedbackError}</p>
+                <button className="btn btn-primary dev-mentor-btn" onClick={handleAskMentor}>
+                  <Sparkles size={16} /> Tentar de novo
+                </button>
+              </div>
+            ) : (
+              <button
+                className="btn btn-primary dev-mentor-btn"
+                onClick={handleAskMentor}
+                disabled={feedbackLoading || !lastTurn.result}
+              >
+                <Sparkles size={16} /> Pergunte ao Mentor Dev sobre este código
+              </button>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* Histórico compacto das execuções anteriores (sem botão inline, Mentor só na última) */}
+      {turns.length > 1 && (
+        <section className="dev-turns" aria-label="Execuções anteriores">
+          <h2 className="dev-section-title">
+            <Terminal size={16} /> Execuções anteriores ({turns.length - 1})
+          </h2>
+          {turns.slice(0, -1).slice().reverse().map(t => (
+            <DevTurn key={t.id} turn={t} />
+          ))}
+          <div ref={turnsBottomRef} />
+        </section>
+      )}
+
+      {turns.length === 0 && (
+        <div className="dev-empty">
+          Nenhuma execução ainda. Escreve código acima e clica em <strong>Rodar</strong>.
+        </div>
       )}
     </div>
   )
