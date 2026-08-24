@@ -24,6 +24,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BookOpen, ChevronLeft, ChevronRight, MessageCircle, Pause, Play, RefreshCw, Send, Sparkles, Terminal, Trash2, Code2, ZoomIn, ZoomOut } from 'lucide-react'
 import Editor from '@monaco-editor/react'
 import { PdfViewer } from '../components/PdfViewer'
+import { XtermTerminal } from '../components/XtermTerminal'
+import { openTerminal, type TerminalSession } from '../lib/devSocket'
 import { useAuth } from '../lib/AuthContext'
 import { supabase, SUPABASE_READY } from '../lib/supabase'
 import type { Book } from '../domain/types'
@@ -125,6 +127,11 @@ export function DevPage({ book, onBack }: DevPageProps) {
   const [feedbackLoading, setFeedbackLoading] = useState(false)
   const [rateUntil, setRateUntil] = useState<number>(0)
   const [globalError, setGlobalError] = useState<string | null>(null)
+  // 24/08/2026 (P3): terminal vivo WebSocket — input() interativo.
+  // Default false = comportamento antigo (HTTP /exec) preservado.
+  const [useTerminal, setUseTerminal] = useState(false)
+  const [terminalSession, setTerminalSession] = useState<TerminalSession | null>(null)
+  const [terminalConnecting, setTerminalConnecting] = useState(false)
 
   // 23/08/2026 (P2.4b): PDF embutido — mesma lógica do ReaderPage.
   // signed URL vem do backend /signed-url-api/sign (TTL 60min).
@@ -259,6 +266,49 @@ export function DevPage({ book, onBack }: DevPageProps) {
   const handleClearCode = useCallback(() => {
     setCode('')
     editorRef.current?.focus()
+  }, [])
+
+  // 24/08/2026 (P3): abre WS pro terminal_server.py:2005 com JWT Supabase +
+  // categoria programacao gate. Sessão fica viva até exit ou disconnect.
+  const handleRunTerminal = useCallback(async () => {
+    if (!book) {
+      setGlobalError('Abra um livro de programação pela biblioteca pra usar o terminal.')
+      setUseTerminal(false)
+      return
+    }
+    if (terminalConnecting || terminalSession) return
+    setGlobalError(null)
+    setTerminalConnecting(true)
+    try {
+      const session = await openTerminal({
+        slug: book.id,
+        language,
+        code,
+        getToken: async () => {
+          const { data } = await supabase.auth.getSession()
+          return data.session?.access_token ?? null
+        },
+      })
+      // Quando o backend fechar, libera o estado
+      session.on('close', () => setTerminalSession(prev => prev))
+      setTerminalSession(session)
+    } catch (e: any) {
+      setGlobalError(`Terminal não conectou: ${e?.message || e}`)
+      setUseTerminal(false)
+    } finally {
+      setTerminalConnecting(false)
+    }
+  }, [book, language, code, terminalConnecting, terminalSession])
+
+  const handleCloseTerminal = useCallback(() => {
+    if (terminalSession) terminalSession.close()
+    setTerminalSession(null)
+  }, [terminalSession])
+
+  // Limpa session ao desmontar a página
+  useEffect(() => {
+    return () => { terminalSession?.close() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const handleRun = useCallback(async () => {
@@ -540,6 +590,20 @@ export function DevPage({ book, onBack }: DevPageProps) {
             <option value="php">{LANG_LABEL.php}</option>
           </select>
         </label>
+        <label className="dev-mode-toggle" title="Modo terminal: input() roda em tempo real (WebSocket). Modo clássico: roda e devolve output">
+          <input
+            type="checkbox"
+            checked={useTerminal}
+            onChange={e => {
+              const next = e.target.checked
+              setUseTerminal(next)
+              if (!next && terminalSession) {
+                handleCloseTerminal()
+              }
+            }}
+          />
+          <Terminal size={14} /> terminal vivo (input())
+        </label>
         <span className={`dev-char-count ${overLimit ? 'is-over' : ''}`}>
           {charsCount} / {MAX_CODE_CHARS} chars
           {overLimit && ' — acima do limite'}
@@ -547,15 +611,20 @@ export function DevPage({ book, onBack }: DevPageProps) {
         <button
           type="button"
           className="btn btn-primary dev-run-btn"
-          onClick={handleRun}
-          disabled={execDisabled}
+          onClick={useTerminal ? handleRunTerminal : handleRun}
+          disabled={useTerminal ? (terminalConnecting || !!terminalSession || overLimit) : execDisabled}
           title={
             overLimit ? 'Código acima de 5000 chars' :
+            useTerminal ? (terminalConnecting ? 'Conectando...' : terminalSession ? 'Sessão já aberta' : 'Abrir terminal interativo') :
             rateLockedMs > 0 ? `Aguarde ${(rateLockedMs/1000).toFixed(1)}s` :
             execLoading ? 'Rodando...' : 'Executar código (Ctrl+Enter)'
           }
         >
-          {execLoading ? (
+          {useTerminal ? (
+            terminalConnecting ? <><RefreshCw size={16} className="spin" /> Conectando…</>
+            : terminalSession ? <><Pause size={16} /> Rodando (terminal)</>
+            : <><Play size={16} /> Conectar terminal</>
+          ) : execLoading ? (
             <><RefreshCw size={16} className="spin" /> Rodando...</>
           ) : rateLockedMs > 0 ? (
             <><RefreshCw size={16} /> Calma {Math.ceil(rateLockedMs/1000)}s</>
@@ -563,6 +632,16 @@ export function DevPage({ book, onBack }: DevPageProps) {
             <><Play size={16} /> Rodar</>
           )}
         </button>
+        {useTerminal && terminalSession && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={handleCloseTerminal}
+            title="Encerra a sessão WS com o Piston"
+          >
+            <Pause size={14} /> Encerrar terminal
+          </button>
+        )}
       </div>
 
       <section className="dev-editor-wrap">
@@ -587,6 +666,27 @@ export function DevPage({ book, onBack }: DevPageProps) {
           loading={<div style={{ padding: 20, color: 'var(--muted)' }}>Carregando editor Monaco…</div>}
         />
       </section>
+
+      {/* 24/08/2026 (P3): terminal interativo WebSocket. Aparece SÓ quando
+          useTerminal=true. xterm.js cuida de stdin/stdout ao vivo. */}
+      {useTerminal && (
+        <section className="dev-terminal-panel" aria-label="Terminal interativo">
+          <header className="dev-section-title">
+            <Terminal size={16} /> Terminal ao vivo — input() em tempo real
+            {terminalSession && (
+              <span className="dev-mode-toggle" style={{ marginLeft: 'auto' }}>
+                <span style={{ color: 'var(--brand)' }}>● conectado</span>
+              </span>
+            )}
+            {!terminalSession && !terminalConnecting && (
+              <span className="dev-mode-toggle" style={{ marginLeft: 'auto', color: 'var(--muted)' }}>
+                clique em “Conectar terminal”
+              </span>
+            )}
+          </header>
+          <XtermTerminal session={terminalSession} />
+        </section>
+      )}
 
       {/* P2.6 — output da última execução em destaque + botão Mentor grande */}
       {lastTurn && (
