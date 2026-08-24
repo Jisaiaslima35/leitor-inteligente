@@ -89,11 +89,36 @@
 }
 .web-pane-preview {
   background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .web-pane-preview .web-pane-header {
   color: #333;
   background: #f8f8f8;
   border-bottom: 1px solid #e5e5e5;
+}
+
+/* ─── P7.9 — 24/08/2026: iframe do Sandpack ocupando 100% do painel ──
+   Isaías testou e viu que o iframe ficava pequeno no canto superior
+   do preview, deixando um vão em branco embaixo + scroll interno
+   desnecessário. Forçamos a hierarquia inteira do Sandpack (.sp-*)
+   a herdar 100% da altura do .web-pane-preview, mantendo o min-height
+   confortável pra não achatar demais em telas pequenas. */
+.sp-preview,
+.sp-preview-container,
+.sp-preview-iframe {
+  height: 100% !important;
+  min-height: 420px;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+.sp-preview-iframe {
+  width: 100%;
+  border: 0;
+  background: #ffffff;
 }
 .web-save-status {
   display: inline-flex;
@@ -220,4 +245,13 @@
   /* P7.8: tabs do editor mais compactas no celular */
   .web-tab-btn { padding: 6px 10px; font-size: 0.72rem; }
   .web-refresh-btn { padding: 3px 8px; font-size: 0.7rem; }
+  /* P7.9: preview mobile com mesma altura confortável que o editor */
+  .web-sandpack.show-preview {
+    min-height: 480px;
+  }
+  .web-sandpack.show-preview .sp-preview,
+  .web-sandpack.show-preview .sp-preview-container,
+  .web-sandpack.show-preview .sp-preview-iframe {
+    min-height: 440px;
+  }
 }
