@@ -784,13 +784,12 @@ class Handler(BaseHTTPRequestHandler):
                 author = (data.get('author') or 'Desconhecido').strip()
                 total_pages = int(data.get('total_pages') or 0)
 
-                # 24/08/2026 (P8): categoria vem do body com whitelist — front-end
+                # 24/08/2026 (P8.1): categoria vem do body com whitelist — front-end
                 # força seleção obrigatória no AdminPage E UploadPage. Default só
-                # se a UI antiga mandar nada (compat). Não aceitamos valor fora
-                # da whitelist — risco de quebrar a view `loadEbookBySlug`/
-                # Sala Dev que filtra por categoria.
+                # se a UI antiga mandar nada (compat). Whitelist inclui 'comum'
+                # pra editar os 19 livros legados do P4 sem quebrar.
                 _CAT_WHITELIST = {
-                    'programacao', 'tecnologia', 'gospel',
+                    'comum', 'programacao', 'tecnologia', 'gospel',
                     'literatura', 'autoajuda', 'outros',
                 }
                 _cat_raw = (data.get('categoria') or '').strip()
@@ -911,9 +910,15 @@ class Handler(BaseHTTPRequestHandler):
                 price_cents = int(fields.get('price_cents', '0') or 0)
                 is_published = fields.get('is_published', 'true').lower() in ('1', 'true', 'yes', 'on')
                 author = 'Admin Isaías'
-                # 23/08/2026: categoria vem do form. Whitelist estrita pra evitar lixo.
+                # 24/08/2026 (P8.1): categoria vem do form. Whitelist expandida
+                # com as 6 categorias oficiais + 'comum' (legado de 19 livros do P4
+                # que continuam no DB). Strict mode: fora do set → 'programacao'
+                # (admin escolheu errado, salvamos como programacao pra Sala Dev ON).
                 _cat_raw = (fields.get('categoria', '') or '').strip().lower()
-                categoria = _cat_raw if _cat_raw in {'programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros'} else 'programacao'
+                categoria = _cat_raw if _cat_raw in {
+                    'comum', 'programacao', 'tecnologia',
+                    'gospel', 'literatura', 'autoajuda', 'outros',
+                } else 'programacao'
 
                 # 3. Salva PDF num path admin-only (storage_path = admin/admin_livro_{ts}.pdf)
                 ts = int(time.time())
@@ -1060,11 +1065,11 @@ class Handler(BaseHTTPRequestHandler):
                 # Campos opcionais — só atualiza o que vier (PUT parcial)
                 allowed = {'title', 'slug', 'author', 'price_cents', 'is_published', 'shareable', 'categoria'}
                 update = {k: v for k, v in data.items() if k in allowed and v is not None}
-                # 23/08/2026: whitelist estrita pra categoria — evita lixo no DB
+                # 24/08/2026 (P8.1): whitelist inclui 'comum' (legado 19 livros P4) + 6 do P8.
                 if 'categoria' in update:
                     cat = str(update['categoria']).strip().lower()
-                    if cat not in {'programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros'}:
-                        return self.send_json(400, {'error': f'categoria inválida: {cat!r}. Use: programacao, tecnologia, gospel, literatura, autoajuda, outros.'})
+                    if cat not in {'comum', 'programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros'}:
+                        return self.send_json(400, {'error': f'categoria inválida: {cat!r}. Use: comum, programacao, tecnologia, gospel, literatura, autoajuda, outros.'})
                     update['categoria'] = cat
                 if 'price_cents' in update:
                     update['price_cents'] = max(0, int(update['price_cents']))

@@ -439,7 +439,7 @@ export function UploadPage({ onBack, onSuccess }: Props) {
             <p>{errorMsg}</p>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
               <button className="btn-primary" onClick={() => setStatus('idle')}>Tentar de novo</button>
-              <a className="btn-ghost" href="https://wa.me/5544884182083" target="_blank" rel="noopener">
+              <a className="btn-ghost" href="https://wa.me/5584921629373" target="_blank" rel="noopener">
                 Falar com suporte
               </a>
             </div>
