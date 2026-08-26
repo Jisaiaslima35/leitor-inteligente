@@ -54,8 +54,12 @@ class PaymentProvider(ABC):
         ...
 
     @abstractmethod
-    def verify_webhook(self, headers: dict, body: bytes) -> dict | None:
-        """Verifica assinatura do webhook. Retorna evento parseado ou None."""
+    def verify_webhook(self, headers: dict, body: bytes, query: dict | None = None) -> dict | None:
+        """Verifica assinatura do webhook. Retorna evento parseado ou None.
+
+        `query`: dict de query params (request.args). Opcional. Usado por provedores
+        cujo webhook viaja no query (ex: MP IPN legacy: ?data_id=xxx&type=payment).
+        """
         ...
 
     @abstractmethod

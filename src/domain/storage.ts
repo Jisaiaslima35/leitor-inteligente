@@ -88,14 +88,14 @@ export async function buyBookRemote(book: Book, state: LibraryState): Promise<Li
   //   - window.location.href após fetch async falha silencioso em mobile (gesture
   //     timeout, popup blocker, session perdida)
   //   - Solução: uma única navegação GET para /api/checkout/redirect no backend.
-  //     Server cria checkout e retorna 302 direto pro Asaas. Browser trata como
+  //     Server cria checkout e retorna 302 direto pro Mercado Pago. Browser trata como
   //     navegação normal, sem race condition.
   //
   // Bug de segurança corrigido:
   //   - Antes: se getSession() retornasse null, o código caía no fallback
   //     `persistLibrary(next)` que liberava o livro sem pagar. Risco: rotação
   //     de anon key quebrou sessão e mostrou bug "fecha e abre a aba" — porque
-  //     o livro era persistido localmente (sem Asaas, sem webhook), a aba voltava
+  //     o livro era persistido localmente (sem MP, sem webhook), a aba voltava
   //     ao mesmo ponto ("pisca"), e ninguém era notificado.
   //   - Agora: se NÃO tem sessão Supabase válida, NÃO persiste. Pede login.
   //
@@ -173,13 +173,13 @@ export async function fetchRemoteProgress(): Promise<ProgressState | null> {
 /**
  * Monitora se um ebook específico foi liberado na user_library.
  * Roda na aba original (a que abriu checkout em window.open).
- * Quando o webhook do Asaas libera o item na user_library:
+ * Quando o webhook do Mercado Pago libera o item na user_library:
  *   1. fecha a aba de checkout (se ainda aberta)
  *   2. dispara CustomEvent 'leitor:library-updated' — o App.tsx escuta
  *      e mostra o modal "Você será redirecionado em 5s" + navega pra
  *      Biblioteca
  *
- * `timeoutMs` default = 5min. Asaas sandbox às vezes demora 30-90s.
+ * `timeoutMs` default = 5min. Mercado Pago sandbox às vezes demora 30-90s.
  */
 export async function pollUntilLibraryHas(
   bookSlug: string,

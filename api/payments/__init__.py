@@ -1,7 +1,10 @@
 """Factory: escolhe o PaymentProvider baseado em env.
 
-Prioridade: ASAAS > CAKTO. Pra adicionar Mercado Pago depois,
-é só criar `mercadopago.py` e adicionar elif aqui.
+Prioridade: MERCADO_PAGO > ASAAS > CAKTO (26/08/2026 — Isaías migrou pra MP).
+
+Pra desabilitar MP e voltar pro Asaas: tire/renomeie MP_ACCESS_TOKEN do .env.
+Asaas fica como fallback vivo (código mantido) — pode flipar de volta
+editando este arquivo ou removendo a var.
 """
 from pathlib import Path
 from typing import Type
@@ -25,10 +28,16 @@ def _env_has(name: str) -> bool:
 
 def get_provider() -> PaymentProvider:
     """Retorna o provider ativo baseado em env."""
+    if _env_has('MP_ACCESS_TOKEN'):
+        from .mercadopago import MercadoPagoProvider
+        return MercadoPagoProvider()
     if _env_has('ASAAS_API_KEY'):
         from .asaas import AsaasProvider
         return AsaasProvider()
     if _env_has('CAKTO_CLIENT_ID'):
         from .cakto import CaktoProvider
         return CaktoProvider()
-    raise RuntimeError('Nenhum PaymentProvider configurado. Defina ASAAS_API_KEY ou CAKTO_CLIENT_ID em /root/.hermes/.env')
+    raise RuntimeError(
+        'Nenhum PaymentProvider configurado. Defina MP_ACCESS_TOKEN, ASAAS_API_KEY '
+        'ou CAKTO_CLIENT_ID em /root/.hermes/.env'
+    )

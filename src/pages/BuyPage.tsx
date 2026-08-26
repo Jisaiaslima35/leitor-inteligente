@@ -6,9 +6,9 @@
  * 2. Se NÃO logado: mostra botão "Entrar com Google". Após o login, o
  *    listener onAuthStateChange no App.tsx detecta SIGNED_IN, lê
  *    sessionStorage, e navega o user de volta pra cá.
- * 3. Se logado: monta a URL do checkout Asaas e mostra um botão
- *    grande "Pagar agora R$ X". O user clica → navegação cross-origin
- *    com user gesture → Asaas sandbox.
+ * 3. Se logado: monta a URL do checkout (Mercado Pago Checkout Pro, transparente)
+ *    e mostra um botão grande "Pagar agora R$ X". O user clica → navegação
+ *    cross-origin com user gesture → init_point do MP.
  *
  * Por que SEM auto-redirect? Extensões de browser (PWA installer, ad
  * blocker, gerenciador de senhas) interceptam window.location.assign
@@ -91,7 +91,7 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [building, setBuilding] = useState(false)
-  // Estado de "cliquei mas o Asaas ainda não respondeu" — feedback visual
+  // Estado de "cliquei mas o Mercado Pago ainda não respondeu" — feedback visual
   // durante a navegação cross-origin (que leva 2-4s via CDN Cloudflare).
   const [navigating, setNavigating] = useState(false)
 
@@ -242,7 +242,7 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
                 // como navegação iniciada pelo user (sem isso, extensões
                 // e PWA installers podem bloquear o cross-origin).
                 // Também ativa feedback visual durante os 2-4s de espera
-                // do `/api/checkout/redirect` (CDN Cloudflare + Asaas).
+                // do `/api/checkout/redirect` (CDN Cloudflare + Mercado Pago).
                 try {
                   localStorage.setItem(
                     'leitor-ia:pending-checkout',
@@ -265,7 +265,7 @@ export function BuyPage({ ebookId, trafficSource, onGoStore, onGoLibrary }: Prop
               {navigating ? (
                 <>
                   <span className="spinner" style={{ marginRight: 8, verticalAlign: 'middle' }} />
-                  Redirecionando pro Asaas…
+                  Redirecionando pro Mercado Pago…
                 </>
               ) : (
                 <>💳 Pagar agora R$ {(book.price / 100).toFixed(2)}</>

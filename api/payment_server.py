@@ -364,6 +364,7 @@ def checkout_create():
 
 @app.route('/api/cakto/webhook', methods=['POST'])
 @app.route('/api/asaas/webhook', methods=['POST'])
+@app.route('/api/mercadopago/webhook', methods=['POST'])
 @app.route('/api/webhook/<provider_name>', methods=['POST'])
 def webhook(provider_name: str = 'cakto'):
     """Recebe notificação de pagamento do provider.
@@ -372,12 +373,16 @@ def webhook(provider_name: str = 'cakto'):
     Webhook busca purchase por payment_id e usa user_id/ebook_id/traffic_source
     daí. externalReference só é usado como hint (upload vs ebook) e ignora
     truncamento do Asaas (email/uid somiam em 35 chars).
+
+    MP webhook NÃO tem HMAC — passamos query (request.args) pro verify_webhook
+    pq o IPN legacy vem com data_id no query. Webhook v2 vem no body JSON.
     """
     raw_body = request.get_data()
     headers = {k: v for k, v in request.headers.items()}
+    query = request.args.to_dict()
 
     provider = get_provider()
-    event = provider.verify_webhook(headers, raw_body)
+    event = provider.verify_webhook(headers, raw_body, query=query)
     if event is None:
         return jsonify({'ok': False, 'error': 'assinatura inválida'}), 401
 

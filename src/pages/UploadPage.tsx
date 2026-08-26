@@ -40,7 +40,7 @@ export function UploadPage({ onBack, onSuccess }: Props) {
     checkAccess()
   }, [user?.id])
 
-  // 2. Se voltou do Asaas (success_url), polling a cada 3s por até 5 min
+  // 2. Se voltou do Mercado Pago (success_url), polling a cada 3s por até 5 min
   useEffect(() => {
     if (access !== 'awaiting_confirmation') return
     if (!user?.id) return
@@ -68,9 +68,9 @@ export function UploadPage({ onBack, onSuccess }: Props) {
     setTimeout(tick, 3000)
   }, [access, user?.id, awaitingSince])
 
-  // 3. Detecta se o user acabou de voltar do Asaas (hash com from=asaas)
+  // 3. Detecta se o user acabou de voltar do Mercado Pago (hash com from=mp)
   useEffect(() => {
-    if (window.location.hash.includes('from=asaas')) {
+    if (window.location.hash.includes('from=mp')) {
       setAccess('awaiting_confirmation')
       setAwaitingSince(Date.now())
     }
@@ -102,7 +102,7 @@ export function UploadPage({ onBack, onSuccess }: Props) {
         body: JSON.stringify({
           user_id: user.id,
           user_email: user.email,
-          success_url: 'https://preview.automacaojs.us/leitor-inteligente/#/upload?from=asaas',
+          success_url: 'https://preview.automacaojs.us/leitor-inteligente/#/upload?from=mp',
           cancel_url: 'https://preview.automacaojs.us/leitor-inteligente/#/upload',
         }),
       })
@@ -111,7 +111,7 @@ export function UploadPage({ onBack, onSuccess }: Props) {
         setErrorMsg(data.error || 'Falha ao criar checkout')
         return
       }
-      // Redireciona pro Asaas. Quando voltar, success_url tem #/upload?from=asaas
+      // Redireciona pro Mercado Pago. Quando voltar, success_url tem #/upload?from=mp
       // e o useEffect acima ativa o polling.
       window.location.href = data.checkout_url
     } catch (e: any) {
@@ -262,7 +262,7 @@ export function UploadPage({ onBack, onSuccess }: Props) {
         <div className="upload-info">
           <strong>Como funciona:</strong>
           <ol>
-            <li>Você paga uma taxa de processamento de R$10 por livro (Asaas — PIX, cartão ou boleto)</li>
+            <li>Você paga uma taxa de processamento de R$10 por livro (Mercado Pago — PIX, cartão ou boleto)</li>
             <li>Após confirmar, faz upload do PDF</li>
             <li>O sistema processa em background (1-30 min dependendo do tamanho)</li>
             <li>Livro aparece automaticamente na sua biblioteca, pronto pra ler e perguntar</li>
@@ -278,12 +278,12 @@ export function UploadPage({ onBack, onSuccess }: Props) {
           </div>
         )}
 
-        {/* === AGUARDANDO confirmação do Asaas (depois do redirect) === */}
+        {/* === AGUARDANDO confirmação do Mercado Pago (depois do redirect) === */}
         {access === 'awaiting_confirmation' && (
           <div className="upload-status">
             <div className="spinner" />
             <h3>⏳ Confirmando pagamento...</h3>
-            <p>Você voltou do Asaas. Estamos validando o pagamento — isso leva até 5 segundos.</p>
+            <p>Você voltou do Mercado Pago. Estamos validando o pagamento — isso leva até 5 segundos.</p>
             <small>Se demorar mais que 5 minutos, fale com a gente.</small>
           </div>
         )}
@@ -314,7 +314,7 @@ export function UploadPage({ onBack, onSuccess }: Props) {
               </button>
             </div>
             <small style={{ display: 'block', marginTop: 12, color: 'var(--muted)' }}>
-              💡 Você será redirecionado pro Asaas (sandbox). Cartão de teste: <code>4444 4444 4444 4444</code> / CVV <code>123</code> / val <code>12/30</code>
+              💡 Você será redirecionado pro Mercado Pago (sandbox). Cartão de teste: <code>4444 4444 4444 4444</code> / CVV <code>123</code> / val <code>12/30</code>
             </small>
           </div>
         )}

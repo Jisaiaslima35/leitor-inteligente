@@ -5,7 +5,7 @@
  *   https://preview.automacaojs.us/leitor-inteligente/#/comprar/{slug}?src={canal}
  *
  * O admin escolhe o canal (Instagram/YouTube/WhatsApp/Outro) antes de copiar
- * pra que a `traffic_source` chegue no webhook do Asaas e seja salva em
+ * pra que a `traffic_source` chegue no webhook do Mercado Pago e seja salva em
  * purchases.traffic_source.
  */
 import { useState } from 'react'
