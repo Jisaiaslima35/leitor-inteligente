@@ -6,6 +6,7 @@ import { getProgress } from '../domain/progress'
 import { PdfViewer } from '../components/PdfViewer'
 import { ShareActions } from '../components/ShareActions'
 import { QuizModal } from '../components/QuizModal'
+import { QuizScoreBoard } from '../components/QuizScoreBoard'
 import type { RagSource } from '../domain/rag'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
@@ -192,6 +193,8 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
   // Quiz de revisão por página — blindagem do chat + persistência de score.
   // pageText (extraído do PDF pelo PdfViewer) alimenta o LLM via /quiz/generate.
   const [quizOpen, setQuizOpen] = useState(false)
+  // Incrementado após cada quiz salvo — faz o QuizScoreBoard refazer GET /score.
+  const [scoreReloadKey, setScoreReloadKey] = useState(0)
   const speech = useSpeechToggle(modoMentor)
 
   // Checar se o livro atual tem skill de Mentor (Modo Autor) carregada.
@@ -538,6 +541,11 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
         pageText={pageText}
         onOpenQuiz={() => setQuizOpen(true)}
       />
+      <QuizScoreBoard
+        bookId={book.id}
+        bookTitle={book.title}
+        reloadKey={scoreReloadKey}
+      />
       <QuizModal
         open={quizOpen}
         onClose={() => setQuizOpen(false)}
@@ -545,6 +553,7 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
         bookTitle={book.title}
         pageNumber={page}
         pageText={pageText}
+        onScoreSaved={() => setScoreReloadKey((k) => k + 1)}
       />
     </section>
   )

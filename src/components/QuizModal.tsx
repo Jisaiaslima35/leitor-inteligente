@@ -18,6 +18,9 @@ interface Props {
   bookTitle: string
   pageNumber: number
   pageText: string
+  // chamado depois que o score é persistido no Supabase — o pai usa pra
+  // recarregar o QuizScoreBoard em tempo real
+  onScoreSaved?: () => void
 }
 
 type Phase = 'loading' | 'answering' | 'feedback' | 'result' | 'out_of_scope'
@@ -40,16 +43,16 @@ async function fetchQuestions(bookId: string, pageNumber: number, pageText: stri
   return data.questions as QuizQuestion[]
 }
 
-async function saveScore(bookId: string, pageNumber: number, correct: number, wrong: number): Promise<void> {
+async function saveScore(bookId: string, pageNumber: number, correct: number, wrong: number): Promise<boolean> {
   // Pega o token atual do Supabase (sem isso o backend devolve 401)
   const { data: sessionData } = await supabase.auth.getSession()
   const token = sessionData.session?.access_token
   if (!token) {
     console.warn('[quiz] sem token, score não persistido')
-    return
+    return false
   }
   try {
-    await fetch('/leitor-inteligente/api/quiz/save', {
+    const r = await fetch('/leitor-inteligente/api/quiz/save', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -57,12 +60,14 @@ async function saveScore(bookId: string, pageNumber: number, correct: number, wr
       },
       body: JSON.stringify({ book_id: bookId, page_number: pageNumber, correct, wrong }),
     })
+    return r.ok
   } catch (e) {
     console.warn('[quiz] save falhou (não-bloqueante):', e)
+    return false
   }
 }
 
-export function QuizModal({ open, onClose, bookId, bookTitle, pageNumber, pageText }: Props) {
+export function QuizModal({ open, onClose, bookId, bookTitle, pageNumber, pageText, onScoreSaved }: Props) {
   const [phase, setPhase] = useState<Phase>('loading')
   const [error, setError] = useState<string | null>(null)
   const [questions, setQuestions] = useState<QuizQuestion[]>([])
@@ -122,9 +127,11 @@ export function QuizModal({ open, onClose, bookId, bookTitle, pageNumber, pageTe
     if (currentIdx + 1 >= questions.length) {
       // última pergunta → calcular score e salvar
       setSavingScore(true)
-      saveScore(bookId, pageNumber, correctCount, wrongCount).finally(() => {
+      saveScore(bookId, pageNumber, correctCount, wrongCount).then((ok) => {
         setSavingScore(false)
         setPhase('result')
+        // avisa o pai pra refrescar o placar em tempo real
+        if (ok) onScoreSaved?.()
       })
     } else {
       setCurrentIdx(currentIdx + 1)
