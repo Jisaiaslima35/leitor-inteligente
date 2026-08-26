@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { ChevronLeft, ChevronRight, Mic, Pause, Play, Send, Sparkles, Volume2, VolumeX, ZoomIn, ZoomOut, Code2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Mic, Pause, Play, Send, Sparkles, Target, Volume2, VolumeX, ZoomIn, ZoomOut, Code2 } from 'lucide-react'
 import type { Book } from '../domain/types'
 import type { ProgressState } from '../domain/library'
 import { getProgress } from '../domain/progress'
 import { PdfViewer } from '../components/PdfViewer'
 import { ShareActions } from '../components/ShareActions'
+import { QuizModal } from '../components/QuizModal'
 import type { RagSource } from '../domain/rag'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
@@ -188,6 +189,9 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
   // F12 em 23/08/2026 03:18.
   const [modoMentor, setModoMentor] = useState(false)
   const [hasSkill, setHasSkill] = useState(false)
+  // Quiz de revisão por página — blindagem do chat + persistência de score.
+  // pageText (extraído do PDF pelo PdfViewer) alimenta o LLM via /quiz/generate.
+  const [quizOpen, setQuizOpen] = useState(false)
   const speech = useSpeechToggle(modoMentor)
 
   // Checar se o livro atual tem skill de Mentor (Modo Autor) carregada.
@@ -531,6 +535,16 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
         modoMentor={modoMentor}
         setModoMentor={setModoMentor}
         hasSkill={hasSkill}
+        pageText={pageText}
+        onOpenQuiz={() => setQuizOpen(true)}
+      />
+      <QuizModal
+        open={quizOpen}
+        onClose={() => setQuizOpen(false)}
+        bookId={book.id}
+        bookTitle={book.title}
+        pageNumber={page}
+        pageText={pageText}
       />
     </section>
   )
@@ -559,9 +573,11 @@ interface ChatProps {
   modoMentor: boolean
   setModoMentor: (v: boolean) => void
   hasSkill: boolean  // só mostra botão Modo Mentor se tiver skill gerada pro slug
+  pageText: string  // texto extraído do PDF (alimenta o QuizModal)
+  onOpenQuiz: () => void  // abre o QuizModal da página atual
 }
 
-function ProfessorChat({ book, messages, input, setInput, send, thinking, listening, voiceSupported, toggleListening, speech, chatScrollRef, page, modoMentor, setModoMentor, hasSkill }: ChatProps) {
+function ProfessorChat({ book, messages, input, setInput, send, thinking, listening, voiceSupported, toggleListening, speech, chatScrollRef, page, modoMentor, setModoMentor, hasSkill, pageText, onOpenQuiz }: ChatProps) {
   return (
     <div className="professor-panel" style={{ marginTop: 20 }}>
       <div className="professor-header">
@@ -587,15 +603,6 @@ function ProfessorChat({ book, messages, input, setInput, send, thinking, listen
         {thinking && <div className="bubble ai">Consultando o livro completo…</div>}
       </div>
       <div className="composer">
-        <input
-          type="text"
-          value={input}
-          disabled={thinking}
-          placeholder={voiceSupported ? 'Pergunte algo ou use o microfone…' : 'Digite sua pergunta — reconhecimento de voz indisponível neste navegador'}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') send(input) }}
-          aria-label="Pergunta para o professor"
-        />
         {hasSkill && (
           <button
             type="button"
@@ -641,9 +648,6 @@ function ProfessorChat({ book, messages, input, setInput, send, thinking, listen
           title={speech.status === 'speaking' ? 'Parar narração' : 'Ouvir a última resposta'}
         >
           {speech.status === 'speaking' ? <VolumeX size={18} /> : <Volume2 size={18} />}
-        </button>
-        <button type="button" className="btn btn-primary" disabled={thinking} onClick={() => send(input)}>
-          <Send size={16} /> <span className="label">{thinking ? 'Pensando…' : 'Enviar'}</span>
         </button>
       </div>
       {/* Chips rápidos SEMPRE visíveis — quick actions pro Professor IA. */}
@@ -735,6 +739,29 @@ function ProfessorChat({ book, messages, input, setInput, send, thinking, listen
           onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)' }}
         >
           🎯 3 exercícios práticos
+        </button>
+        <button
+          type="button"
+          disabled={thinking || !pageText.trim()}
+          onClick={onOpenQuiz}
+          title="Gera 3 perguntas didáticas (+10 acerto / -5 erro) sobre a página atual"
+          data-testid="quiz-page-btn"
+          style={{
+            padding: '8px 14px',
+            fontSize: 13,
+            fontWeight: 600,
+            borderRadius: 999,
+            background: 'linear-gradient(135deg, #2a2540, #3a3150)',
+            color: '#e8e0d0',
+            border: '1px solid #d4af37',
+            cursor: thinking || !pageText.trim() ? 'not-allowed' : 'pointer',
+            opacity: thinking || !pageText.trim() ? 0.5 : 1,
+            transition: 'transform 0.15s, box-shadow 0.15s',
+          }}
+          onMouseEnter={(e) => { if (!thinking && pageText.trim()) e.currentTarget.style.transform = 'translateY(-1px)' }}
+          onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)' }}
+        >
+          <Target size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} /> Quiz da Página
         </button>
       </div>
       {speech.debugInfo && (
