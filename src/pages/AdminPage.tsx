@@ -8,6 +8,7 @@ import { getProgress } from '../domain/progress'
 import { supabase, SUPABASE_READY } from '../lib/supabase'
 import { CampaignLinkButton } from '../components/CampaignLinkButton'
 import { CategoriaRadioGroup, isCategoriaValida } from '../components/CategoriaRadioGroup'
+import { MentorSkillsPanel } from '../components/MentorSkillsPanel'
 import { ADMIN_USER_ID, isAdminUser } from '../lib/admin'
 
 const ADMIN_TOKEN = 'admin-bypass-leitor-2026'
@@ -66,7 +67,7 @@ function formatDate(iso?: string | null) {
   return new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
 }
 
-type Tab = 'overview' | 'users' | 'purchases' | 'ebooks'
+type Tab = 'overview' | 'users' | 'purchases' | 'ebooks' | 'mentor'
 
 export function AdminPage({ library, progress, user, onReset }: Props) {
   const [tab, setTab] = useState<Tab>('overview')
@@ -349,7 +350,7 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
       )}
 
       <nav style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-        {(['overview', 'ebooks', 'users', 'purchases'] as Tab[]).map((t) => (
+        {(['overview', 'ebooks', 'users', 'purchases', 'mentor'] as Tab[]).map((t) => (
           <button
             key={t}
             className={`btn ${tab === t ? 'btn-primary' : ''}`}
@@ -359,6 +360,7 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
             {t === 'ebooks' && `Meus livros (${myEbooks.length})`}
             {t === 'users' && `Usuários (${profiles.length})`}
             {t === 'purchases' && `Vendas (${purchases.length})`}
+            {t === 'mentor' && '✨ Criar eBook Mentor'}
           </button>
         ))}
       </nav>
@@ -757,6 +759,10 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
             </div>
           </div>
         </div>
+      )}
+
+      {tab === 'mentor' && (
+        <MentorSkillsPanel />
       )}
     </section>
   )
