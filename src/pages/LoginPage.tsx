@@ -36,8 +36,19 @@ export function LoginPage({ onBack, onSuccess }: Props) {
   // Se o user JÁ tava logado quando essa rota abriu (sem contexto de campanha),
   // e o pai passou `onSuccess`, navega. Esse efeito não roda em campanhas,
   // porque o App.tsx já redirecionou via hash antes mesmo de mostrar essa tela.
+  //
+  // Bug 30/08/2026: se havia um pending-buy em sessionStorage (entrada via
+  // link de campanha /comprar/<slug>?src=...), o onAuthStateChange do App.tsx
+  // precisa navegar pra `#/comprar/<slug>` antes do LoginPage chamar onSuccess
+  // — senão o onSuccess (síncrono, dentro do commit React) ganha a corrida e o
+  // user cai na biblioteca em vez do checkout. Regra: pending-buy ativo →
+  // LoginPage NÃO chama onSuccess. App.tsx é a autoridade única do redirect.
   useEffect(() => {
     if (isAuthenticated && onSuccess) {
+      try {
+        const pending = sessionStorage.getItem('leitor-ia:pending-buy')
+        if (pending) return  // deixa o App.tsx redirecionar via onAuthStateChange
+      } catch { /* sem sessionStorage — segue fluxo normal */ }
       onSuccess()
     }
   }, [isAuthenticated, onSuccess])
