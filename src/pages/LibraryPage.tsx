@@ -21,8 +21,10 @@ interface LibraryBook {
   pdf_storage_path: string | null
   total_pages: number
   owner_user_id: string | null
-  purchased_at: string
+  purchased_at: string | null
   payment_status: string
+  is_global: boolean
+  skill_generated: boolean
 }
 
 export function LibraryPage({ progress, onNavigate }: Props) {
@@ -38,35 +40,50 @@ export function LibraryPage({ progress, onNavigate }: Props) {
       setLoading(true)
       setError(null)
       try {
-        // JOIN: pega livros da user_library + metadados do ebooks
+        // View inclui: user_library (do user) UNION ALL ebooks globais
+        // (globais aparecem pra todo mundo, sem precisar de user_library row)
         const { data, error: e1 } = await supabase
-          .from('user_library')
+          .from('user_library_with_globals')
           .select(`
-            purchased_at, payment_status,
-            ebooks!inner(
-              id, slug, title, author, cover_url,
-              pdf_storage_path, total_pages, owner_user_id
-            )
+            user_id, purchased_at, payment_status,
+            ebook_id, slug, title, author, cover_url,
+            pdf_storage_path, total_pages, owner_user_id,
+            is_global, skill_generated
           `)
-          .eq('user_id', userId)
-          .order('purchased_at', { ascending: false })
+          .order('is_global', { ascending: false })
+          .order('purchased_at', { ascending: false, nullsFirst: false })
 
         if (e1) throw e1
         if (cancelled) return
 
-        const rows = (data || []).map((row: any) => ({
-          id: row.ebooks.slug,
-          ebook_id: row.ebooks.id,
-          slug: row.ebooks.slug,
-          title: row.ebooks.title,
-          author: row.ebooks.author,
-          cover_url: row.ebooks.cover_url,
-          pdf_storage_path: row.ebooks.pdf_storage_path,
-          total_pages: row.ebooks.total_pages || 0,
-          owner_user_id: row.ebooks.owner_user_id,
-          purchased_at: row.purchased_at,
-          payment_status: row.payment_status,
-        }))
+        // Dedup: se user já comprou um global, vem 2x (1 confirmed + 1 global). Mantém confirmed.
+        const seen = new Set<string>()
+        const rows: LibraryBook[] = []
+        for (const row of (data || []) as any[]) {
+          if (row.user_id !== userId && row.is_global) {
+            // é global "virtual" pra esse user, normal
+          } else if (row.user_id !== userId) {
+            // não é do user e não é global → ignora (RLS já filtra, mas defensivo)
+            continue
+          }
+          if (seen.has(row.slug)) continue
+          seen.add(row.slug)
+          rows.push({
+            id: row.slug,
+            ebook_id: row.ebook_id,
+            slug: row.slug,
+            title: row.title,
+            author: row.author,
+            cover_url: row.cover_url,
+            pdf_storage_path: row.pdf_storage_path,
+            total_pages: row.total_pages || 0,
+            owner_user_id: row.owner_user_id,
+            purchased_at: row.purchased_at,
+            payment_status: row.payment_status,
+            is_global: !!row.is_global,
+            skill_generated: !!row.skill_generated,
+          })
+        }
         setBooks(rows)
       } catch (e: any) {
         setError(e?.message || String(e))
@@ -133,6 +150,18 @@ export function LibraryPage({ progress, onNavigate }: Props) {
                   <h4>
                     {book.title}
                     {isMine && <span className="my-book-badge">Meu livro</span>}
+                    {book.is_global && (
+                      <span
+                        className="my-book-badge"
+                        style={{
+                          background: 'linear-gradient(90deg,#7c3aed,#db2777)',
+                          color: '#fff',
+                          marginLeft: 6,
+                        }}
+                      >
+                        ✨ Modo Mentor
+                      </span>
+                    )}
                   </h4>
                   <div className="author">por {book.author}</div>
                 </div>
