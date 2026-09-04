@@ -7,6 +7,9 @@ import { PdfViewer } from '../components/PdfViewer'
 import { ShareActions } from '../components/ShareActions'
 import { QuizModal } from '../components/QuizModal'
 import { QuizScoreBoard } from '../components/QuizScoreBoard'
+import { ChecklistCapitulo } from '../components/ChecklistCapitulo'
+import { SelectionToolbar, type SelectionInfo, type HighlightColor } from '../components/SelectionToolbar'
+import { AnnotationModal, type Highlight } from '../components/AnnotationModal'
 import type { RagSource } from '../domain/rag'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
@@ -190,6 +193,19 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
   // F12 em 23/08/2026 03:18.
   const [modoMentor, setModoMentor] = useState(false)
   const [hasSkill, setHasSkill] = useState(false)
+  // JWT do Supabase — passado pro ChecklistCapitulo fazer toggle UPSERT
+  const [checklistJwt, setChecklistJwt] = useState('')
+  // Highlights — Turno 2 (04/09/2026). Lista dos grifos da página atual,
+  // hidratada via GET /highlights?book_slug=X&page=N quando page muda.
+  const [highlights, setHighlights] = useState<Highlight[]>([])
+  const [selection, setSelection] = useState<SelectionInfo | null>(null)
+  // Modo do AnnotationModal: null (fechado) | 'create' com draft | 'edit' com highlight existente
+  const [annotationMode, setAnnotationMode] = useState<
+    | { kind: 'edit'; highlight: Highlight }
+    | { kind: 'create'; draft: { selected_text: string; color: HighlightColor; startIdx: number; endIdx: number; pageNumber: number } }
+    | null
+  >(null)
+  const [highlightsJwt, setHighlightsJwt] = useState('')
   // Quiz de revisão por página — blindagem do chat + persistência de score.
   // pageText (extraído do PDF pelo PdfViewer) alimenta o LLM via /quiz/generate.
   const [quizOpen, setQuizOpen] = useState(false)
@@ -211,6 +227,48 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
       .catch(() => { if (!cancelled) setHasSkill(false) })
     return () => { cancelled = true }
   }, [book?.id])
+
+  // Pega JWT do Supabase pra passar pro ChecklistCapitulo.
+  // Só busca quando o livro muda (mesma janela do fetch do signed-url).
+  useEffect(() => {
+    let cancelled = false
+    setChecklistJwt('')
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return
+      setChecklistJwt(data.session?.access_token || '')
+    })
+    return () => { cancelled = true }
+  }, [book.id])
+
+  // Reaproveita o mesmo JWT pros highlights (mesma sessão Supabase).
+  useEffect(() => {
+    setHighlightsJwt(checklistJwt)
+  }, [checklistJwt])
+
+  // Busca highlights da PÁGINA atual sempre que muda page/bookSlug.
+  // Endpoint público nginx: /leitor-inteligente/highlights-api/highlights
+  useEffect(() => {
+    let cancelled = false
+    // Limpa a lista pra não mostrar grifos da página antiga durante o fetch.
+    setHighlights([])
+    if (!highlightsJwt || !book.id) return
+    const url = `/leitor-inteligente/highlights-api/highlights?book_slug=${encodeURIComponent(book.id)}&page=${page}`
+    fetch(url, { headers: { Authorization: `Bearer ${highlightsJwt}` } })
+      .then((r) => r.ok ? r.json() : { ok: false, items: [] })
+      .then((data) => {
+        if (cancelled) return
+        const items = Array.isArray(data.items) ? data.items : []
+        // Valida shape mínima — protege contra schema drift.
+        setHighlights(items.filter((x: any) =>
+          typeof x?.id === 'string' &&
+          typeof x?.start_idx === 'number' &&
+          typeof x?.end_idx === 'number' &&
+          typeof x?.selected_text === 'string'
+        ))
+      })
+      .catch(() => { if (!cancelled) setHighlights([]) })
+    return () => { cancelled = true }
+  }, [book.id, page, highlightsJwt])
 
   useEffect(() => () => {
     recognitionRef.current?.stop()
@@ -285,6 +343,160 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
     recognitionRef.current = recognition
     setListening(true)
   }, [listening, send])
+
+  // === Highlights + Notas — handlers ===
+  // Backend: POST /leitor-inteligente/highlights-api/highlights
+  //         PATCH /leitor-inteligente/highlights-api/highlights/{id}
+  //         DELETE /leitor-inteligente/highlights-api/highlights/{id}
+  const HIGHLIGHTS_API = '/leitor-inteligente/highlights-api/highlights'
+
+  const createHighlight = useCallback(async (
+    selectedText: string,
+    startIdx: number,
+    endIdx: number,
+    color: HighlightColor,
+    pageNumber: number,
+  ): Promise<Highlight | null> => {
+    if (!highlightsJwt) return null
+    // 04/09/2026: sanitizar NUL/controles do PDF antes de enviar. Postgres
+    // rejeita   e o backend sanitiza como defesa secundária.
+    const safeText = selectedText.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+    const res = await fetch(HIGHLIGHTS_API, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${highlightsJwt}`,
+      },
+      body: JSON.stringify({
+        book_slug: book.id,
+        page_number: pageNumber,
+        start_idx: startIdx,
+        end_idx: endIdx,
+        selected_text: safeText,
+        color,
+      }),
+    })
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}))
+      throw new Error(errBody?.error || `HTTP ${res.status}`)
+    }
+    const data = await res.json()
+    const newH: Highlight = {
+      id: data.id,
+      page_number: pageNumber,
+      start_idx: startIdx,
+      end_idx: endIdx,
+      selected_text: selectedText,
+      color,
+      note_text: null,
+    }
+    // Atualização otimista — pinta imediatamente antes do refetch.
+    setHighlights((prev) => [...prev, newH])
+    return newH
+  }, [highlightsJwt, book.id])
+
+  const updateHighlight = useCallback(async (
+    id: string,
+    patch: { note_text?: string | null; color?: HighlightColor },
+  ): Promise<Highlight | null> => {
+    if (!highlightsJwt) return null
+    const res = await fetch(`${HIGHLIGHTS_API}/${id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${highlightsJwt}`,
+      },
+      body: JSON.stringify(patch),
+    })
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}))
+      throw new Error(errBody?.error || `HTTP ${res.status}`)
+    }
+    const data = await res.json()
+    const updated = data.updated as Highlight
+    setHighlights((prev) => prev.map((h) => h.id === id ? { ...h, ...updated } : h))
+    return updated
+  }, [highlightsJwt])
+
+  const deleteHighlight = useCallback(async (id: string): Promise<void> => {
+    if (!highlightsJwt) return
+    const res = await fetch(`${HIGHLIGHTS_API}/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${highlightsJwt}` },
+    })
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}))
+      throw new Error(errBody?.error || `HTTP ${res.status}`)
+    }
+    setHighlights((prev) => prev.filter((h) => h.id !== id))
+  }, [highlightsJwt])
+
+  // Handlers do SelectionToolbar — recebe a seleção que o PdfViewer detectou.
+  const handlePickColor = useCallback(async (color: HighlightColor) => {
+    if (!selection) return
+    try {
+      await createHighlight(selection.text, selection.startIdx, selection.endIdx, color, page)
+      // Limpa seleção nativa pra não duplicar o feedback visual.
+      window.getSelection()?.removeAllRanges()
+      setSelection(null)
+    } catch (e) {
+      alert(`Falha ao grifar: ${e instanceof Error ? e.message : e}`)
+    }
+  }, [selection, createHighlight, page])
+
+  const handleAnnotate = useCallback((color: HighlightColor) => {
+    if (!selection) return
+    setAnnotationMode({
+      kind: 'create',
+      draft: {
+        selected_text: selection.text,
+        color,
+        startIdx: selection.startIdx,
+        endIdx: selection.endIdx,
+        pageNumber: page,
+      },
+    })
+    window.getSelection()?.removeAllRanges()
+    setSelection(null)
+  }, [selection, page])
+
+  // "🤖 Perguntar ao Professor IA" — pré-preenche o chat e manda direto.
+  const handleAskProfessor = useCallback(() => {
+    if (!selection) return
+    const template = `Professor, me explique o que o autor quis dizer com este trecho: "${selection.text}"`
+    // Limpa a seleção nativa antes de abrir o chat (evita o toolbar reaparecer).
+    window.getSelection()?.removeAllRanges()
+    setSelection(null)
+    // setInput é local ao ProfessorChat — o send já chama com o texto.
+    send(template)
+  }, [selection, send])
+
+  const handleHighlightClick = useCallback((h: Highlight) => {
+    // Limpa seleção nativa pra não conflitar com o modal.
+    window.getSelection()?.removeAllRanges()
+    setSelection(null)
+    setAnnotationMode({ kind: 'edit', highlight: h })
+  }, [])
+
+  // Save do modal — POST se for create, PATCH se for edit.
+  const handleAnnotationSave = useCallback(async (
+    note: string | null,
+    color: HighlightColor,
+  ) => {
+    if (!annotationMode) return
+    if (annotationMode.kind === 'edit') {
+      await updateHighlight(annotationMode.highlight.id, { note_text: note, color })
+      return
+    }
+    // create
+    const { selected_text, startIdx, endIdx, pageNumber } = annotationMode.draft
+    await createHighlight(selected_text, startIdx, endIdx, color, pageNumber)
+  }, [annotationMode, createHighlight, updateHighlight])
+
+  const handleAnnotationDelete = useCallback(async () => {
+    if (!annotationMode || annotationMode.kind !== 'edit') return
+    await deleteHighlight(annotationMode.highlight.id)
+  }, [annotationMode, deleteHighlight])
 
   if (pdfLoading) {
     return (
@@ -457,6 +669,29 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
         onInternalNav={handleInternalNav}
         scale={scale}
         onTextExtracted={setPageText}
+        highlights={highlights}
+        onSelectionChange={setSelection}
+        onHighlightClick={handleHighlightClick}
+      />
+
+      {selection && (
+        <SelectionToolbar
+          selection={selection}
+          onPickColor={handlePickColor}
+          onAnnotate={handleAnnotate}
+          onAskProfessor={handleAskProfessor}
+          onDismiss={() => {
+            window.getSelection()?.removeAllRanges()
+            setSelection(null)
+          }}
+        />
+      )}
+
+      <AnnotationModal
+        mode={annotationMode}
+        onClose={() => setAnnotationMode(null)}
+        onSave={handleAnnotationSave}
+        onDelete={handleAnnotationDelete}
       />
 
       {showOnboarding && (
@@ -541,6 +776,16 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
         pageText={pageText}
         onOpenQuiz={() => setQuizOpen(true)}
       />
+      {/* Checklist desativado em 04/09 — Isaías pediu pra ocultar (poluia a leitura).
+          Backend checklist_server (porta 9142) fica de pé pra reativação futura.
+          Pra reativar: descomentar este bloco. */}
+      {false && modoMentor && hasSkill && (
+        <ChecklistCapitulo
+          bookSlug={book.id}
+          chapterId={`p${page}`}
+          accessToken={checklistJwt}
+        />
+      )}
       <QuizScoreBoard
         bookId={book.id}
         bookTitle={book.title}
