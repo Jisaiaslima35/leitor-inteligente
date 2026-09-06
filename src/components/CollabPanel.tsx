@@ -19,7 +19,7 @@ import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { MonacoBinding } from 'y-monaco'
 import { v4 as uuidv4 } from 'uuid'
-import { Users } from 'lucide-react'
+import { Users, Radio } from 'lucide-react'
 import { fetchJson } from '../lib/fetchJson'
 import { BASE_URL } from '../lib/baseUrl'
 
@@ -43,6 +43,17 @@ const WS_BASE = isDev
 
 // localStorage prefix consistente com o resto do app
 const LS_KEY = (roomId: string) => `leitor-ia:room-${roomId}:draft`
+
+// ── Rádio PX / Push-to-Talk ──────────────────────────────────────────────
+// 06/09/2026 Isaías: áudio estilo walkie-talkie pra Estudo em Dupla.
+// Cap 15s com auto-stop; Opus (webm) → webm → mp4 (Safari). Eco local
+// (walkie-talkie real) + roger beep Web Audio API ~800Hz 50ms.
+const PTT_MAX_MS = 15_000
+const PTT_CODECS = [
+  'audio/webm;codecs=opus',
+  'audio/webm',
+  'audio/mp4',
+] as const
 
 const MODES = [
   { id: 'text', label: '📝 Texto', lang: undefined, monacoLang: 'plaintext' },
@@ -75,6 +86,13 @@ export default function CollabPanel({
   const [execOut, setExecOut] = useState<string>('')
   const [execTs, setExecTs] = useState<number>(0)
   const [inviteCopied, setInviteCopied] = useState(false)
+  // Rádio PX
+  const [pttActive, setPttActive] = useState(false)
+  const [pttPeerTalking, setPttPeerTalking] = useState<{ name: string; until: number } | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const pttStreamRef = useRef<MediaStream | null>(null)
+  const pttTimeoutRef = useRef<number | null>(null)
+  const audioCtxRef = useRef<AudioContext | null>(null)
 
   const monacoLang = MODES.find((m) => m.id === mode)?.monacoLang || 'plaintext'
 
@@ -176,6 +194,50 @@ export default function CollabPanel({
     }
   }, [roomId, jwtToken, isAuthenticated, displayName])
 
+  // ── Listener de mensagens PTT no WS subjacente ─────────────────────────
+  // y-websocket usa o WS pra binário Yjs (sync). Mensagens de texto JSON
+  // (Rádio PX) chegam no mesmo socket — usamos addEventListener pra
+  // escutar sem quebrar o listener interno do y-websocket. Tipos válidos:
+  // ptt_audio (Blob Base64) + ptt_state (apenas avisa TX ativo/fim).
+  useEffect(() => {
+    const provider = providerRef.current
+    const ws = provider?.ws as WebSocket | undefined
+    if (!ws) return
+
+    const onMessage = (evt: MessageEvent) => {
+      // y-websocket cuida de binário; só nos importam strings
+      if (typeof evt.data !== 'string') return
+      let msg: { type?: string; sender?: string; audio?: string; until?: number }
+      try {
+        msg = JSON.parse(evt.data)
+      } catch {
+        return
+      }
+      if (msg.type === 'ptt_audio' && msg.audio) {
+        // toca áudio recebido (eco já é local — sender não recebe de volta
+        // porque o server faz fan-out só pros outros peers)
+        try {
+          const audio = new Audio(msg.audio)
+          audio.play().catch(() => { /* autoplay bloqueado — silencioso */ })
+        } catch {}
+        // mostra indicador "📻 [nome] falando..." por até 3s (audio pode
+        // acabar antes, mas enquanto toca é sinal claro)
+        const durMs = Math.min(PTT_MAX_MS, 3000)
+        setPttPeerTalking({ name: msg.sender || 'Alguém', until: Date.now() + durMs })
+        setTimeout(() => setPttPeerTalking(null), durMs)
+        // roger beep (Web Audio API — ~800Hz 50ms)
+        try {
+          playRogerBeep()
+        } catch {}
+      }
+      // ptt_state (início/fim de TX) — pode ser usado pra UI no futuro.
+      // Por enquanto o indicador já dispara no audio arriving.
+    }
+
+    ws.addEventListener('message', onMessage)
+    return () => ws.removeEventListener('message', onMessage)
+  }, [status])
+
   // ── Bind Monaco ↔ Y.Text quando editor monta ─────────────────────────
   const onMount: OnMount = (editor, monaco) => {
     editorRef.current = editor
@@ -265,6 +327,130 @@ export default function CollabPanel({
     ].filter(Boolean).join('\n\n')
     setExecOut(out || '(sem saída)')
   }
+
+  // ── Rádio PX: handlers PTT ──────────────────────────────────────────────
+  // MediaRecorder cap 15s, eco local (walkie-talkie real), Roger Beep
+  // Web Audio API 800Hz/50ms, transporte via WS provider.ws (texto JSON).
+  const pickPttMimeType = (): string => {
+    if (typeof MediaRecorder === 'undefined') return ''
+    for (const t of PTT_CODECS) {
+      try {
+        if (MediaRecorder.isTypeSupported(t)) return t
+      } catch {}
+    }
+    return ''
+  }
+
+  const playRogerBeep = () => {
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
+      }
+      const ctx = audioCtxRef.current
+      // resume se suspenso (iOS Safari exige gesture, mas pointerup já conta)
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {})
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.value = 800
+      // envelope rápido: 0→1 em 5ms, sustain 40ms, 1→0 em 5ms
+      const now = ctx.currentTime
+      gain.gain.setValueAtTime(0, now)
+      gain.gain.linearRampToValueAtTime(0.18, now + 0.005)
+      gain.gain.setValueAtTime(0.18, now + 0.045)
+      gain.gain.linearRampToValueAtTime(0, now + 0.05)
+      osc.connect(gain).connect(ctx.destination)
+      osc.start(now)
+      osc.stop(now + 0.055)
+    } catch {}
+  }
+
+  const pttStart = async (e: React.SyntheticEvent) => {
+    e.preventDefault()
+    if (pttActive) return
+    const provider = providerRef.current
+    const ws = provider?.ws as WebSocket | undefined
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.warn('[PTT] WS não conectado, fala descartada')
+      return
+    }
+    const mimeType = pickPttMimeType()
+    if (!mimeType) {
+      console.warn('[PTT] nenhum codec de áudio suportado neste browser')
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      })
+      pttStreamRef.current = stream
+      const recorder = new MediaRecorder(stream, { mimeType })
+      mediaRecorderRef.current = recorder
+      const chunks: Blob[] = []
+      recorder.ondataavailable = (ev) => { if (ev.data.size > 0) chunks.push(ev.data) }
+      recorder.onstop = async () => {
+        // monta Blob e converte pra data: URL base64
+        const blob = new Blob(chunks, { type: mimeType })
+        const dataUrl: string = await new Promise((resolve, reject) => {
+          const fr = new FileReader()
+          fr.onload = () => resolve(fr.result as string)
+          fr.onerror = () => reject(fr.error)
+          fr.readAsDataURL(blob)
+        })
+        // eco local (walkie-talkie real — ouve o que transmitiu)
+        try {
+          const localAudio = new Audio(dataUrl)
+          localAudio.play().catch(() => {})
+        } catch {}
+        // envia pros outros peers via WS subjacente
+        try {
+          ws.send(JSON.stringify({
+            type: 'ptt_audio',
+            sender: displayName,
+            audio: dataUrl,
+            timestamp: Date.now(),
+          }))
+        } catch (err) {
+          console.warn('[PTT] send falhou:', err)
+        }
+        // libera microfone
+        pttStreamRef.current?.getTracks().forEach(t => t.stop())
+        pttStreamRef.current = null
+        mediaRecorderRef.current = null
+      }
+      recorder.start()
+      setPttActive(true)
+      // safety net: cap 15s
+      if (pttTimeoutRef.current) window.clearTimeout(pttTimeoutRef.current)
+      pttTimeoutRef.current = window.setTimeout(() => {
+        pttStop()
+      }, PTT_MAX_MS)
+    } catch (err) {
+      console.warn('[PTT] getUserMedia falhou:', err)
+    }
+  }
+
+  const pttStop = (e?: React.SyntheticEvent) => {
+    if (e) e.preventDefault()
+    if (!pttActive) return
+    if (pttTimeoutRef.current) {
+      window.clearTimeout(pttTimeoutRef.current)
+      pttTimeoutRef.current = null
+    }
+    try {
+      mediaRecorderRef.current?.stop()
+    } catch {}
+    setPttActive(false)
+  }
+
+  // cleanup do microfone se o componente desmontar mid-recording
+  useEffect(() => {
+    return () => {
+      if (pttTimeoutRef.current) window.clearTimeout(pttTimeoutRef.current)
+      pttStreamRef.current?.getTracks().forEach(t => t.stop())
+      try { mediaRecorderRef.current?.stop() } catch {}
+    }
+  }, [])
 
   // ── Convidar (gera URL ?room= e copia pro clipboard) ─────────────────
   // 04/09/2026: bug crítico no mobile — a versão antiga montava
@@ -389,6 +575,38 @@ export default function CollabPanel({
           >
             {inviteCopied ? '✅ copiado' : '🔗 convidar'}
           </button>
+          {/* Rádio PX: botão PTT — segura pra falar estilo walkie-talkie.
+              Estado normal: ícone Radio + "PX". Segurando: vermelho pulsando. */}
+          <button
+            onPointerDown={pttStart}
+            onPointerUp={pttStop}
+            onPointerLeave={pttStop}
+            onPointerCancel={pttStop}
+            onContextMenu={(e) => e.preventDefault()}
+            title={pttActive ? 'Transmitindo… solte pra encerrar' : 'Segure pra falar no Rádio PX (15s máx)'}
+            aria-label={pttActive ? 'Transmitindo no Rádio PX' : 'Segure para falar no Rádio PX'}
+            style={{
+              background: pttActive ? '#dc2626' : 'transparent',
+              border: pttActive ? '1px solid #ef4444' : '1px solid #2F3B4D',
+              color: pttActive ? '#fff' : '#F0E8D8',
+              padding: '6px 10px',
+              borderRadius: 8,
+              cursor: pttActive ? 'wait' : 'pointer',
+              fontSize: 13,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              transition: 'background 0.15s, border-color 0.15s',
+              animation: pttActive ? 'ptt-pulse 0.8s ease-in-out infinite' : 'none',
+              userSelect: 'none',
+              touchAction: 'none',
+            }}
+            onMouseEnter={(e) => { if (!pttActive) e.currentTarget.style.background = '#1F2B3D' }}
+            onMouseLeave={(e) => { if (!pttActive) e.currentTarget.style.background = 'transparent' }}
+          >
+            <Radio size={14} />
+            {pttActive ? 'Transmitindo…' : 'PX'}
+          </button>
           <button
             onClick={onClose}
             title="Fechar painel"
@@ -424,6 +642,26 @@ export default function CollabPanel({
           no seu navegador. Faça login no Leitor pra sincronizar com o anfitrião em tempo real.
         </div>
       )}
+
+      {/* Indicador PTT remoto: aparece enquanto peer tá transmitindo */}
+      {pttPeerTalking && (
+        <div
+          className="px-3 py-2 bg-red-500/20 text-red-200 text-xs border-b border-red-500/30 flex items-center gap-2"
+          role="status"
+          aria-live="polite"
+        >
+          <Radio size={14} className="animate-pulse" />
+          <span>📻 <strong>{pttPeerTalking.name}</strong> falando no rádio…</span>
+        </div>
+      )}
+
+      {/* Keyframes pra pulsação do botão PTT (vermelho on-air) */}
+      <style>{`
+        @keyframes ptt-pulse {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.6); }
+          50% { box-shadow: 0 0 0 6px rgba(220, 38, 38, 0); }
+        }
+      `}</style>
 
       <div className="flex items-center gap-1 p-2 border-b border-[#1F2B3D] overflow-x-auto">
         {MODES.map((m) => (

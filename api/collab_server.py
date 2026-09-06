@@ -183,10 +183,13 @@ def _parse_path_query(ws) -> tuple[Optional[str], Dict[str, str]]:
 
 
 async def _pump_binary(ws, room_id: str):
-    """Fan-out de mensagens binárias Yjs entre todos os peers da sala.
+    """Fan-out de mensagens Yjs (binário) e PTT (texto JSON) entre peers.
 
-    O servidor NÃO interpreta — apenas retransmite. Mensagens vazias
-    (pings do y-websocket) são ignoradas.
+    O servidor NÃO interpreta binário Yjs — apenas retransmite. Para
+    mensagens de texto JSON (Rádio PX / Push-to-Talk), valida o tipo
+    (`ptt_audio`, `ptt_state`) e faz fan-out como texto pra todos os
+    outros peers. Snapshot binário NÃO é atualizado com mensagens PTT
+    (são efêmeras, não devem persistir pra cold-start).
     """
     try:
         async for raw in ws:
@@ -194,20 +197,35 @@ async def _pump_binary(ws, room_id: str):
             if not target:
                 continue
             target.last_active = time.time()
-            # atualiza snapshot se for um update Yjs (frame sync step 2 /
-            # update incremental tem tipicamente >2 bytes)
-            if isinstance(raw, (bytes, bytearray)) and len(raw) >= 2:
-                # sobrescreve com estado mais recente — Y.Doc inteiro cabe
-                # num snapshot só se for pequeno. Pra textos longos, isso
-                # vira "último update parcial" — funciona porque novo peer
-                # pede sync-step-1 que retorna esse snapshot E os outros
-                # peers completam via fan-out.
-                target.snapshot = bytes(raw)
+            # ── Binário: protocolo Yjs ────────────────────────────────
+            if isinstance(raw, (bytes, bytearray)):
+                if len(raw) >= 2:
+                    target.snapshot = bytes(raw)
+                payload = raw
+            # ── Texto: canal customizado (PTT) ────────────────────────
+            elif isinstance(raw, str):
+                # Limita tamanho pra não abusar: ~256KB de áudio Base64
+                if len(raw) > 2 ** 18:
+                    log.warning(f"pump: msg texto grande descartada ({len(raw)}b) room={room_id[:8]}")
+                    continue
+                try:
+                    parsed = json.loads(raw)
+                except Exception:
+                    log.debug(f"pump: texto não-JSON descartado room={room_id[:8]}")
+                    continue
+                # Whitelist de tipos aceitos. Outros = silencioso.
+                msg_type = parsed.get("type")
+                if msg_type not in ("ptt_audio", "ptt_state"):
+                    continue
+                payload = raw  # repassa o JSON cru como string
+                log.debug(f"pump: fan-out PTT type={msg_type} room={room_id[:8]} bytes={len(raw)}")
+            else:
+                continue
             for other in list(target.peers.values()):
                 if other.ws is ws:
                     continue
                 try:
-                    await other.ws.send(raw)
+                    await other.ws.send(payload)
                 except Exception as e:
                     log.debug(f"fan-out falhou: {e}")
     except ConnectionClosed:
@@ -420,7 +438,7 @@ async def main():
         port=PORT,
         ping_interval=20,
         ping_timeout=30,
-        max_size=2 ** 22,  # 4MB por frame (Yjs pode ser grande)
+        max_size=2 ** 22,  # 4MB por frame (Yjs + PTT Base64 ~40KB cabem tranquilo)
         process_request=process_request,
     ) as srv:
         log.info(f"collab_server ouvindo ws://127.0.0.1:{PORT}{PATH_PREFIX}<roomId>")
