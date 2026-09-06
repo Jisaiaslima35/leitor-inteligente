@@ -86,6 +86,8 @@ export default function CollabPanel({
   const [execOut, setExecOut] = useState<string>('')
   const [execTs, setExecTs] = useState<number>(0)
   const [inviteCopied, setInviteCopied] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [syncFlash, setSyncFlash] = useState<null | 'ok' | 'fail'>(null)
   // Rádio PX
   const [pttActive, setPttActive] = useState(false)
   const [pttPeerTalking, setPttPeerTalking] = useState<{ name: string; until: number } | null>(null)
@@ -284,6 +286,71 @@ export default function CollabPanel({
       }, 2000)
     })
   }
+
+  // ── Sincronização manual (botão 🔄 + visibilitychange) ──────────────
+  // 06/09/2026 Isaías: mobile + perda de foco às vezes deixava o Yjs
+  // "stale" — usuário só via updates do peer depois de F5. Solução:
+  // (a) botão 🔄 que re-conecta o WS e reatribui o value do Monaco do
+  //     yText atual (sem recarregar a página);
+  // (b) hook visibilitychange — ao voltar pro foreground, se o WS não
+  //     tá OPEN ou synced, força reconexão automática.
+  const manualSync = () => {
+    const provider = providerRef.current
+    const editor = editorRef.current
+    const ytext = ytextRef.current
+    if (!provider || syncing) return
+    setSyncing(true)
+    setSyncFlash(null)
+    // 1) Força reconexão do WS — novo handshake, server envia sync-step-1
+    //    e demais peers completam via fan-out.
+    try {
+      try { provider.disconnect() } catch {}
+      try { provider.connect() } catch {}
+    } catch (e) {
+      console.warn('[sync] reconnect falhou:', e)
+    }
+    // 2) Reatribui value do Monaco do yText atual — cobre divergência
+    //    local (mobile às vezes perde updates do Yjs após long sleep).
+    //    Preserva posição de cursor.
+    setTimeout(() => {
+      try {
+        if (editor && ytext) {
+          const currentValue = editor.getValue()
+          const ytextValue = ytext.toString()
+          if (currentValue !== ytextValue) {
+            const pos = editor.getPosition()
+            editor.setValue(ytextValue)
+            if (pos) editor.setPosition(pos)
+          }
+        }
+      } catch (e) {
+        console.warn('[sync] reatribuição falhou:', e)
+      }
+      setSyncing(false)
+      setSyncFlash('ok')
+      setTimeout(() => setSyncFlash(null), 1800)
+    }, 600)
+  }
+
+  // ── Auto-recuperação no retorno de foco (mobile) ──────────────────────
+  // Quando o app volta do background, o WS pode ter sido desconectado
+  // silenciosamente (iOS suspende conexões após ~30s). Se detectar isso,
+  // disparamos manualSync() automaticamente — sem F5.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return
+      const provider = providerRef.current
+      const ws = provider?.ws as WebSocket | undefined
+      const isOpen = ws?.readyState === WebSocket.OPEN
+      const wasGuest = status === 'guest'
+      if (!provider || wasGuest) return
+      if (!isOpen) {
+        manualSync()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [status, syncing])
 
   // ── Mudar modo: troca language do Monaco, NÃO substitui conteúdo ─────
   const switchMode = (newMode: ModeId) => {
@@ -574,6 +641,45 @@ export default function CollabPanel({
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
           >
             {inviteCopied ? '✅ copiado' : '🔗 convidar'}
+          </button>
+          {/* Sync Manual (06/09/2026 Isaías): força reconexão Yjs + reatribui
+              yText no Monaco. Resolve o caso mobile/perda de foco em que o
+              WS fica "stale" e o usuário só vê updates do peer depois de F5.
+              Feedback: ícone gira 600ms + badge verde "Sincronizado!" 1.8s. */}
+          <button
+            onClick={manualSync}
+            title="Forçar sincronização (reconecta WS e reatribui texto do editor)"
+            aria-label="Sincronizar manualmente o documento colaborativo"
+            disabled={syncing || status === 'guest'}
+            style={{
+              background: syncFlash === 'ok' ? '#16a34a' : 'transparent',
+              border: syncFlash === 'ok' ? '1px solid #22c55e' : '1px solid #2F3B4D',
+              color: syncFlash === 'ok' ? '#fff' : '#F0E8D8',
+              padding: '6px 10px',
+              borderRadius: 8,
+              cursor: syncing ? 'wait' : 'pointer',
+              fontSize: 13,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              transition: 'background 0.2s, border-color 0.2s',
+              opacity: status === 'guest' ? 0.4 : 1,
+            }}
+            onMouseEnter={(e) => {
+              if (syncing || syncFlash === 'ok') return
+              e.currentTarget.style.background = '#1F2B3D'
+            }}
+            onMouseLeave={(e) => {
+              if (syncFlash === 'ok') return
+              e.currentTarget.style.background = 'transparent'
+            }}
+          >
+            <span style={{
+              display: 'inline-block',
+              transition: 'transform 0.6s ease',
+              transform: syncing ? 'rotate(360deg)' : 'rotate(0deg)',
+            }}>🔄</span>
+            {syncFlash === 'ok' ? 'Sincronizado!' : 'Sincronizar'}
           </button>
           {/* Rádio PX: botão PTT — segura pra falar estilo walkie-talkie.
               Estado normal: ícone Radio + "PX". Segurando: vermelho pulsando. */}
