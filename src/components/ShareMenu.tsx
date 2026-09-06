@@ -6,9 +6,13 @@
  * - "Compartilhar no WhatsApp" — abre wa.me com mensagem pré-preenchida
  *
  * Aparece no BookCard da StorePage (vitrine pública) e no Admin.
+ *
+ * 06/09/2026 v11: URL base agora vem de window.location.origin + BASE_URL
+ * (raiz no sub novo, path prefix no preview).
  */
 import { useState } from 'react'
 import { Share2, Copy, Check, MessageCircle, ChevronDown } from 'lucide-react'
+import { absoluteUrl, BASE_URL } from '../lib/baseUrl'
 
 interface Props {
   ebookSlug: string
@@ -22,13 +26,11 @@ const CHANNELS = [
   { value: 'outro',     label: 'Outro (só copiar)' },
 ]
 
-const BASE = 'https://preview.automacaojs.us/leitor-inteligente'
-
 export function ShareMenu({ ebookSlug, bookTitle }: Props) {
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState(false)
 
-  const linkInstagram = `${BASE}/#/comprar/${encodeURIComponent(ebookSlug)}?src=instagram`
+  const linkInstagram = `${absoluteUrl(BASE_URL)}#/comprar/${encodeURIComponent(ebookSlug)}?src=instagram`
   const message = `Olha esse livro que achei: ${bookTitle} — ${linkInstagram}`
 
   const handleCopy = async () => {

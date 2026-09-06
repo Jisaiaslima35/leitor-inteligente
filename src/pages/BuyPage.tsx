@@ -23,6 +23,7 @@ import { useAuth } from '../lib/AuthContext'
 import { CATALOG } from '../domain/catalog'
 import type { Book } from '../domain/types'
 import { supabase } from '../lib/supabase'
+import { absoluteUrl } from '../lib/baseUrl'
 
 interface Props {
   ebookId: string
@@ -73,7 +74,7 @@ async function loadBookFromSupabase(ebookId: string): Promise<Book | null> {
 }
 
 function buildCheckoutUrl(book: Book, email: string, uid: string, trafficSource: string | null) {
-  const backUrl = 'https://preview.automacaojs.us/leitor-inteligente/#/library'
+  const backUrl = `${absoluteUrl('/')}#/library`
   const params = new URLSearchParams({
     slug: book.id,
     email,

@@ -30,6 +30,7 @@ import { useAuth } from '../lib/AuthContext'
 import { supabase, SUPABASE_READY } from '../lib/supabase'
 import CollabPanel, { newRoomId } from '../components/CollabPanel'
 import type { Book } from '../domain/types'
+import { BASE_URL } from '../lib/baseUrl'
 
 // P9 (24/08/2026): Sandpack pesado (~608KB), lazy load só quando seleciona "Projeto Web"
 const WebSandpackPanel = lazy(() =>
@@ -395,7 +396,7 @@ export function DevPage({ book, onBack, roomId, onCloseCollab }: DevPageProps) {
     setRateUntil(Date.now() + RATE_LIMIT_MS)
 
     try {
-      const r = await fetchJson('/leitor-inteligente/dev-api/exec', {
+      const r = await fetchJson(`${BASE_URL}dev-api/exec`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -452,7 +453,7 @@ export function DevPage({ book, onBack, roomId, onCloseCollab }: DevPageProps) {
     setGlobalError(null)
     setTurns(prev => prev.map(t => t.id === lastTurn.id ? { ...t, feedbackLoading: true, feedbackError: undefined } : t))
     try {
-      const r = await fetchJson('/leitor-inteligente/dev-api/feedback', {
+      const r = await fetchJson(`${BASE_URL}dev-api/feedback`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { CheckCircle2, ChevronRight, Sparkles, Target, X, XCircle, RefreshCw } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { BASE_URL } from '../lib/baseUrl'
 
 export type QuizQuestion = {
   id: number
@@ -31,7 +32,7 @@ const SCORE_WRONG = -5
 const QUESTIONS_PER_QUIZ = 3
 
 async function fetchQuestions(bookId: string, pageNumber: number, pageText: string): Promise<QuizQuestion[]> {
-  const r = await fetch('/leitor-inteligente/api/quiz/generate', {
+  const r = await fetch(`${BASE_URL}api/quiz/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ book_id: bookId, page_number: pageNumber, page_text: pageText }),
@@ -52,7 +53,7 @@ async function saveScore(bookId: string, pageNumber: number, correct: number, wr
     return false
   }
   try {
-    const r = await fetch('/leitor-inteligente/api/quiz/save', {
+    const r = await fetch(`${BASE_URL}api/quiz/save`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

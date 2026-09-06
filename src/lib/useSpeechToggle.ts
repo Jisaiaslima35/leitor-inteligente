@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { BASE_URL } from '../lib/baseUrl'
 
 type SpeechStatus = 'idle' | 'speaking'
 
@@ -29,11 +30,12 @@ const VOICE_NORMAL = 'female-shaonv'
  *      → PLUS: 3 RAF (não 2) entre cancel() e speak() pra Chrome Android
  *        que tem delay maior pra enfileirar utterance.
  *  v5 (23/08/2026 1ª): aceita `useCloudTts` (boolean). Quando true, usa
- *      fetch /leitor-inteligente/tts-api/tts (MiniMax Audio Starter
+ *      fetch `${BASE_URL}tts-api/tts` (MiniMax Audio Starter
  *      R$13,50, voz Portuguese_Deep-VoicedGentleman) + elemento <audio>.
  *      Quando false, mantém speechSynthesis nativo (voz do browser).
  *      Mapeamento: Modo Mentor = useCloudTts=true (voz do Mentor),
  *      modo normal = useCloudTts=false (voz nativa do browser).
+ *      06/09/2026 v11: usa BASE_URL (raiz no sub novo, prefixo no preview).
  *  v6 (23/08/2026 2ª): SEMPRE usa MiniMax (sem fallback nativo). Isaías
  *      pediu voz MiniMax em ambos os modos (igual nas rádios com voz
  *      clonada). O param agora é `modoMentor` e seleciona a voz:
@@ -94,7 +96,7 @@ export function useSpeechToggle(modoMentor: boolean = false) {
     }
 
     try {
-      const res = await fetch('/leitor-inteligente/tts-api/tts', {
+      const res = await fetch(`${BASE_URL}tts-api/tts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, voice_id: voiceId }),

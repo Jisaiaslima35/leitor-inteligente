@@ -10,6 +10,7 @@ import { CampaignLinkButton } from '../components/CampaignLinkButton'
 import { CategoriaRadioGroup, isCategoriaValida } from '../components/CategoriaRadioGroup'
 import { MentorSkillsPanel } from '../components/MentorSkillsPanel'
 import { ADMIN_USER_ID, isAdminEmail, isAdminUser } from '../lib/admin'
+import { BASE_URL } from '../lib/baseUrl'
 
 const ADMIN_TOKEN = 'admin-bypass-leitor-2026'
 
@@ -197,7 +198,7 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
     setErr(null)
     try {
       const resp = await fetch(
-        `/leitor-inteligente/upload-api/api/admin/delete-book?ebook_id=${encodeURIComponent(ebook.id)}`,
+        `${BASE_URL}upload-api/api/admin/delete-book?ebook_id=${encodeURIComponent(ebook.id)}`,
         {
           method: 'DELETE',
           headers: { 'X-Admin-Token': ADMIN_TOKEN },
@@ -250,7 +251,7 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
     setEditBusy(true)
     setErr(null)
     try {
-      const resp = await fetch('/leitor-inteligente/upload-api/api/admin/update-book', {
+      const resp = await fetch(`${BASE_URL}upload-api/api/admin/update-book`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN },
         body: JSON.stringify({
@@ -306,7 +307,7 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
       form.append('is_published', String(uploadPublishing))
       form.append('categoria', uploadCategoria)
       form.append('admin_token', 'admin-bypass-leitor-2026')
-      const resp = await fetch('/leitor-inteligente/upload-api/api/admin/upload-book', {
+      const resp = await fetch(`${BASE_URL}upload-api/api/admin/upload-book`, {
         method: 'POST',
         headers: { 'X-Admin-Token': 'admin-bypass-leitor-2026' },
         body: form,

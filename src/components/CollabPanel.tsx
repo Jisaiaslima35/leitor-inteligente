@@ -21,6 +21,7 @@ import { MonacoBinding } from 'y-monaco'
 import { v4 as uuidv4 } from 'uuid'
 import { Users } from 'lucide-react'
 import { fetchJson } from '../lib/fetchJson'
+import { BASE_URL } from '../lib/baseUrl'
 
 interface CollabPanelProps {
   roomId: string
@@ -32,13 +33,13 @@ interface CollabPanelProps {
 }
 
 // URL do backend WS — produção via Nginx, dev via localhost
-// 04/09/2026: o front roda em https://preview.automacaojs.us/leitor-inteligente/
-// mas o nginx SÓ tem `location /leitor-inteligente/ws/collab` (com prefixo).
-// Montar `wss://host/ws/collab` (sem prefixo) dá 404 → handshake nunca fecha.
+// 06/09/2026 v11: nginx do subdomínio novo (leitorinteligente.automacaojs.us)
+// tem `location /ws/collab` (raiz) — não precisa mais de prefixo /leitor-inteligente/.
+// BASE_URL é '/' em prod (raiz) e '/' em dev também (vite.config.ts base: '/').
 const isDev = typeof window !== 'undefined' && window.location.port === '5173'
 const WS_BASE = isDev
   ? 'ws://127.0.0.1:2006/collab'
-  : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/leitor-inteligente/ws/collab`
+  : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${BASE_URL}ws/collab`
 
 // localStorage prefix consistente com o resto do app
 const LS_KEY = (roomId: string) => `leitor-ia:room-${roomId}:draft`
@@ -243,7 +244,7 @@ export default function CollabPanel({
     const code = editorRef.current?.getValue() || ''
     // mesma rota que DevPage usa
     const result = await fetchJson<{ stdout: string; stderr?: string; error?: string }>(
-      '/leitor-inteligente/dev-api/exec',
+      `${BASE_URL}dev-api/exec`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -1,8 +1,10 @@
 // devSocket.ts — cliente WebSocket pro terminal interativo da Sala Dev.
 //
 // ISAÍAS 24/08/2026 — feature/terminal-interativo
-// Conecta em /leitor-inteligente/ws/exec (proxy Nginx → terminal_server.py:2005
-// → Piston 127.0.0.1:2000). Token do Supabase vai na primeira msg `init`.
+// 06/09/2026 v11 — migração pra raiz: ws path é `${BASE_URL}ws/exec` (era
+// `/leitor-inteligente/ws/exec`). nginx do subdomínio novo tem location /ws/exec.
+// → terminal_server.py:2005 → Piston 127.0.0.1:2000. Token do Supabase vai na
+// primeira msg `init`.
 //
 // API simples:
 //   const sess = await openTerminal({ slug, language, code, getToken })
@@ -40,12 +42,13 @@ export interface TerminalSession {
   off: <K extends keyof TerminalEvents>(name: K, cb: TerminalEvents[K]) => void
 }
 
+const BASE_URL = import.meta.env.BASE_URL || '/'
 const DEFAULT_URL = (() => {
   if (typeof window === 'undefined') return ''
-  // Em prod, Nginx escuta 9121 e proxy em /leitor-inteligente/ws/exec.
+  // Em prod, Nginx escuta 9121 e proxy em `${BASE_URL}ws/exec` (raiz no v11).
   // Em dev, Vite faz proxy diretamente pro terminal_server (configura em vite.config.ts).
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${window.location.host}/leitor-inteligente/ws/exec`
+  return `${proto}://${window.location.host}${BASE_URL}ws/exec`
 })()
 
 export function openTerminal(opts: OpenTerminalOpts): Promise<TerminalSession> {

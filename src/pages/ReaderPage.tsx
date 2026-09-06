@@ -15,6 +15,7 @@ import type { RagSource } from '../domain/rag'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
 import { useSpeechToggle } from '../lib/useSpeechToggle'
+import { BASE_URL } from '../lib/baseUrl'
 type ChatRole = 'user' | 'ai'
 
 interface ChatMessage {
@@ -436,7 +437,7 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
   // Backend: POST /leitor-inteligente/highlights-api/highlights
   //         PATCH /leitor-inteligente/highlights-api/highlights/{id}
   //         DELETE /leitor-inteligente/highlights-api/highlights/{id}
-  const HIGHLIGHTS_API = '/leitor-inteligente/highlights-api/highlights'
+  const HIGHLIGHTS_API = `${BASE_URL}/highlights-api/highlights`
 
   const createHighlight = useCallback(async (
     selectedText: string,

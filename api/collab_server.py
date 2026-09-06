@@ -10,7 +10,8 @@ Arquitetura:
   um snapshot binário opcional pra cold-start da sala).
 - Salas vazias por >5min são limpas. Rate limit: 1 connect/1s/IP.
 
-ROTA: wss://preview.automacaojs.us/leitor-inteligente/ws/collab/<roomId>
+ROTA: wss://leitorinteligente.automacaojs.us/ws/collab/<roomId>  (v11, raiz)
+       wss://preview.automacaojs.us/leitor-inteligente/ws/collab/<roomId>  (fallback preview)
        proxy nginx → ws://127.0.0.1:2006/collab/<roomId>
 
 Códigos de close custom:

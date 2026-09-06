@@ -2,7 +2,10 @@
  * CampaignLinkButton — Gera e copia links de campanha.
  *
  * Cada livro do catálogo recebe um link único:
- *   https://preview.automacaojs.us/leitor-inteligente/#/comprar/{slug}?src={canal}
+ *   {window.location.origin}{BASE_URL}#/comprar/{slug}?src={canal}
+ *
+ * 06/09/2026 v11: BASE_URL dinâmico — raiz no subdomínio novo
+ * (leitorinteligente.automacaojs.us), path prefix no preview antigo.
  *
  * O admin escolhe o canal (Instagram/YouTube/WhatsApp/Outro) antes de copiar
  * pra que a `traffic_source` chegue no webhook do Mercado Pago e seja salva em
@@ -10,6 +13,7 @@
  */
 import { useState } from 'react'
 import { Link2, Copy, Check, ChevronDown } from 'lucide-react'
+import { BASE_URL, absoluteUrl } from '../lib/baseUrl'
 
 interface Props {
   ebookSlug: string
@@ -24,14 +28,12 @@ const CHANNELS = [
   { value: 'outro',     label: 'Outro' },
 ]
 
-const BASE = 'https://preview.automacaojs.us/leitor-inteligente'
-
 export function CampaignLinkButton({ ebookSlug }: Props) {
   const [channel, setChannel] = useState<string>('instagram')
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)  // mensagem de feedback
 
-  const link = `${BASE}/#/comprar/${encodeURIComponent(ebookSlug)}?src=${channel}`
+  const link = `${absoluteUrl(BASE_URL)}#/comprar/${encodeURIComponent(ebookSlug)}?src=${channel}`
 
   const handleCopy = async () => {
     try {

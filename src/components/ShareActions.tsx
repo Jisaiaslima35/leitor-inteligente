@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Copy, Share2, MessageCircle, Check } from 'lucide-react'
+import { absoluteUrl } from '../lib/baseUrl'
 
 interface Props {
   text: string
@@ -55,7 +56,8 @@ export function ShareActions({ text, bookTitle }: Props) {
 
   const handleMessenger = () => {
     // Facebook Messenger sharer (mesmo no mobile abre o app)
-    const url = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent('https://preview.automacaojs.us/leitor-inteligente/')}&quote=${encodeURIComponent(fullText)}`
+    // 06/09/2026 v11: usa absoluteUrl() dinâmico (raiz no sub novo, path prefix no preview)
+    const url = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(absoluteUrl('/'))}&quote=${encodeURIComponent(fullText)}`
     window.open(url, '_blank', 'noopener,noreferrer')
   }
 

@@ -39,11 +39,22 @@ from payments import get_provider
 from api.book_meta import SUPABASE_URL, SUPABASE_SR
 
 import urllib.request
+import os
+
+# 06/09/2026 v11: APP_BASE_URL — origem dinâmica pros redirects/checkout URLs.
+# Em prod, setar APP_BASE_URL=https://leitorinteligente.automacaojs.us no env.
+# Default = preview (fallback ativo durante migração).
+APP_BASE_URL = os.environ.get('APP_BASE_URL', 'https://preview.automacaojs.us/leitor-inteligente')
+STORE_URL = f'{APP_BASE_URL}/#/store'
+LIBRARY_URL = f'{APP_BASE_URL}/#/library'
+UPLOAD_URL = f'{APP_BASE_URL}/#/upload'
 
 app = Flask(__name__)
 # CORS: permite requisições do preview.automacaojs.us (frontend do Leitor)
+# 06/09/2026 v11: novo subdomínio leitorinteligente.automacaojs.us (raiz /) adicionado
 CORS(app, resources={r'/api/*': {'origins': [
     'https://preview.automacaojs.us',
+    'https://leitorinteligente.automacaojs.us',
     'https://automacaojs.us',
     'http://localhost:5173',
     'http://localhost:3010',
@@ -223,17 +234,17 @@ def checkout_redirect():
     customer_email = request.args.get('email')
     customer_id = request.args.get('uid')
     traffic_source = request.args.get('src')  # instagram/youtube/whatsapp/outro
-    back_url = request.args.get('back') or 'https://preview.automacaojs.us/leitor-inteligente/#/library'
+    back_url = request.args.get('back') or LIBRARY_URL
 
     if not (ebook_slug and customer_email):
-        return redirect('https://preview.automacaojs.us/leitor-inteligente/#/store')
+        return redirect(STORE_URL)
 
     status, body = _supabase_get(
         f'ebooks?slug=eq.{ebook_slug}&select=id,title,price_cents,slug,shareable'
     )
     if status != 200:
         return redirect(
-            f'https://preview.automacaojs.us/leitor-inteligente/#/store?error=supabase_{status}'
+            f'{STORE_URL}?error=supabase_{status}'
         )
     try:
         ebooks = json.loads(body)
@@ -241,7 +252,7 @@ def checkout_redirect():
         ebooks = []
     if not ebooks:
         return redirect(
-            f'https://preview.automacaojs.us/leitor-inteligente/#/store?error=ebook_not_found'
+            f'{STORE_URL}?error=ebook_not_found'
         )
 
     ebook = ebooks[0]
@@ -250,7 +261,7 @@ def checkout_redirect():
     amount_cents = int(ebook.get('price_cents') or 2990)
     # shareable=false = livro privado (testes, demos). Bloqueia checkout de campanha.
     if ebook.get('shareable') is False:
-        return redirect('https://preview.automacaojs.us/leitor-inteligente/#/store?error=not_shareable')
+        return redirect(f'{STORE_URL}?error=not_shareable')
 
     provider = get_provider()
     checkout_metadata = {'traffic_source': traffic_source} if traffic_source else None
@@ -262,13 +273,13 @@ def checkout_redirect():
             customer_email=customer_email,
             customer_id=customer_id or customer_email,
             success_url=back_url,
-            cancel_url='https://preview.automacaojs.us/leitor-inteligente/#/store',
+            cancel_url=STORE_URL,
             metadata=checkout_metadata,
         )
     except Exception as e:
         print(f'[checkout/redirect] erro provider: {e}', flush=True)
         return redirect(
-            f'https://preview.automacaojs.us/leitor-inteligente/#/store?error=provider_failed'
+            f'{STORE_URL}?error=provider_failed'
         )
 
     purchase_payload = {
@@ -295,8 +306,8 @@ def checkout_create():
     customer_email = data.get('customer_email')
     customer_id = data.get('customer_id')
     traffic_source = data.get('traffic_source')  # instagram/youtube/whatsapp/outro
-    success_url = data.get('success_url', 'https://preview.automacaojs.us/leitor-inteligente/#/library')
-    cancel_url = data.get('cancel_url', 'https://preview.automacaojs.us/leitor-inteligente/#/store')
+    success_url = data.get('success_url', LIBRARY_URL)
+    cancel_url = data.get('cancel_url', STORE_URL)
 
     if not (ebook_slug and customer_email):
         return jsonify({'ok': False, 'error': 'ebook_slug e customer_email obrigatórios'}), 400
@@ -640,7 +651,7 @@ small {{ color: #6b7280; font-size: 0.85rem; }}
     <input type="hidden" name="amount_cents" value="{int(ebook.get("price_cents") or 500)}">
     <button class="btn" type="submit">✅ Pagar agora (simular)</button>
   </form>
-  <a href="https://preview.automacaojs.us/leitor-inteligente/#/store" style="text-decoration:none"><button class="btn btn-cancel" type="button">Cancelar</button></a>
+  <a href="{STORE_URL}" style="text-decoration:none"><button class="btn btn-cancel" type="button">Cancelar</button></a>
   <p><small>External ID: {external_id}</small></p>
 </div>
 </body></html>'''
@@ -672,7 +683,7 @@ def simulate_confirm():
     html = f'''<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pagamento confirmado! ✅</title>
-<meta http-equiv="refresh" content="2;url=https://preview.automacaojs.us/leitor-inteligente/#/library">
+<meta http-equiv="refresh" content="2;url={LIBRARY_URL}">
 <style>
 body {{ font-family: system-ui; background: #065f46; color: white; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }}
 .card {{ background: white; color: #065f46; border-radius: 20px; padding: 40px; max-width: 420px; text-align: center; }}
@@ -718,8 +729,8 @@ def upload_create_checkout():
             amount_cents=1000,  # R$10 — mínimo do Asaas sandbox pra billingType=UNDEFINED é R$5
             customer_id=user_id,
             customer_email=user_email,
-            success_url=success_url or 'https://preview.automacaojs.us/leitor-inteligente/#/upload',
-            cancel_url=cancel_url or 'https://preview.automacaojs.us/leitor-inteligente/#/upload',
+            success_url=success_url or UPLOAD_URL,
+            cancel_url=cancel_url or UPLOAD_URL,
         )
     except Exception as e:
         return jsonify({'ok': False, 'error': f'falha ao criar checkout: {e}'}), 500

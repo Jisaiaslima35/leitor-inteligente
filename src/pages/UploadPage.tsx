@@ -3,6 +3,7 @@ import { Upload, CheckCircle, AlertCircle, FileText, ArrowLeft, CreditCard } fro
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
 import { CategoriaRadioGroup, type CategoriaValue } from '../components/CategoriaRadioGroup'
+import { absoluteUrl } from '../lib/baseUrl'
 
 type Status = 'idle' | 'uploading' | 'processing' | 'done' | 'error'
 type AccessStatus = 'loading' | 'paid' | 'unpaid' | 'awaiting_confirmation'
@@ -102,8 +103,8 @@ export function UploadPage({ onBack, onSuccess }: Props) {
         body: JSON.stringify({
           user_id: user.id,
           user_email: user.email,
-          success_url: 'https://preview.automacaojs.us/leitor-inteligente/#/upload?from=mp',
-          cancel_url: 'https://preview.automacaojs.us/leitor-inteligente/#/upload',
+          success_url: `${absoluteUrl('/')}#/upload?from=mp`,
+          cancel_url: `${absoluteUrl('/')}#/upload`,
         }),
       })
       const data = await r.json()

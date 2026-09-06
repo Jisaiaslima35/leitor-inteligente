@@ -250,7 +250,7 @@ function InnerApp() {
 
     // Helper interno: carrega metadata via endpoint público + marca guestMode
     function fetchGuestMeta() {
-      fetch(`${import.meta.env.BASE_URL}signed-url-api/guest-meta?slug=${encodeURIComponent(bookId)}&room_id=${encodeURIComponent(room)}`)
+      fetch(`${import.meta.env.BASE_URL}signed-url-api/guest-meta?slug=${encodeURIComponent(bookId || '')}&room_id=${encodeURIComponent(room || '')}`)
         .then((r) => r.json().then((j) => ({ status: r.status, body: j })))
         .then((result) => {
           if (cancelled) return

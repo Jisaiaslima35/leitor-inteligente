@@ -4,6 +4,7 @@ import { DEFAULT_USER } from './types'
 import { checkoutBook } from './library'
 import { saveProgress } from './progress'
 import { SUPABASE_READY, supabase } from '../lib/supabase'
+import { absoluteUrl } from '../lib/baseUrl'
 import {
   addRemotePurchase,
   loadRemoteLibrary,
@@ -126,7 +127,7 @@ export async function buyBookRemote(book: Book, state: LibraryState): Promise<Li
   // GET em window.location.href é o jeito mais robusto em mobile: o browser
   // não cancela um redirect que veio de um user gesture (click), mesmo que o
   // usuário esteja offline por 1s durante o request.
-  const backUrl = 'https://preview.automacaojs.us/leitor-inteligente/#/library'
+  const backUrl = `${absoluteUrl('/')}#/library`
   const redirectUrl =
     `https://pay.automacaojs.us/api/checkout/redirect` +
     `?slug=${encodeURIComponent(book.id)}` +

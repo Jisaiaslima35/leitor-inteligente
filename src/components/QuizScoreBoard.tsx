@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { Trophy, Target, BookOpen } from 'lucide-react'
+import { BASE_URL } from '../lib/baseUrl'
 
 interface Score {
   total_score: number
@@ -37,7 +38,7 @@ export function QuizScoreBoard({ bookId, bookTitle, reloadKey }: Props) {
       }
       try {
         const r = await fetch(
-          `/leitor-inteligente/api/quiz/score?book_id=${encodeURIComponent(bookId)}`,
+          `${BASE_URL}api/quiz/score?book_id=${encodeURIComponent(bookId)}`,
           { headers: { Authorization: `Bearer ${token}` } },
         )
         const data = await r.json()

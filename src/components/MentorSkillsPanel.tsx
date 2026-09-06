@@ -10,6 +10,7 @@
 import { useEffect, useState } from 'react'
 import { Sparkles, RefreshCw, CheckCircle2, AlertCircle, BookOpen, Copy, ExternalLink, Zap } from 'lucide-react'
 import { supabase, SUPABASE_READY } from '../lib/supabase'
+import { BASE_URL } from '../lib/baseUrl'
 
 interface EbookRow {
   id: string
@@ -38,7 +39,7 @@ interface SkillListItem {
   skill_md_size: number
 }
 
-const ADMIN_SKILL_API = `${import.meta.env.BASE_URL}admin-skill-api`
+const ADMIN_SKILL_API = `${BASE_URL}admin-skill-api`
 
 export function MentorSkillsPanel() {
   const [ebooks, setEbooks] = useState<EbookRow[]>([])
@@ -76,11 +77,11 @@ export function MentorSkillsPanel() {
   }
   useEffect(() => { load() }, [])
 
-  // URL pública do Leitor (preview.automacaojs.us/leitor-inteligente/...)
+  // URL pública do Leitor — 06/09/2026 v11: usa BASE_URL (raiz no subdomínio novo)
   useEffect(() => {
     const proto = window.location.protocol
     const host = window.location.host
-    setPublicUrl(`${proto}//${host}/leitor-inteligente/`)
+    setPublicUrl(`${proto}//${host}${BASE_URL}`)
   }, [])
 
   const filtered = ebooks.filter(b =>
