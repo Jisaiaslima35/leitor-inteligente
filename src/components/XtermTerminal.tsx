@@ -80,11 +80,17 @@ export function XtermTerminal({
     containerRef.current.addEventListener('touchstart', focusTerminal, { passive: true })
     containerRef.current.addEventListener('click', focusTerminal)
 
-    // Quando o aluno digita no terminal → manda stdin
+    // Quando o aluno digita no terminal → manda stdin.
+    // IMPORTANTE: xterm manda \r puro quando o usuário aperta Enter (sem
+    // \n) — é o comportamento de TTY real. Mas o `input()` do Python (e
+    // o stdin do Piston) só desbloqueia com \n. Sem essa conversão o
+    // Python fica travado esperando newline que nunca chega e a sessão
+    // expira sem dar output. Isaías 05/09/2026.
     term.onData((data) => {
-      if (sessionRef.current) {
-        sessionRef.current.sendStdin(data)
-      }
+      if (!sessionRef.current) return
+      // \r sozinho → \n (Enter do TTY). \r\n → \n (CRLF).
+      const normalized = data.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+      sessionRef.current.sendStdin(normalized)
     })
 
     return () => {

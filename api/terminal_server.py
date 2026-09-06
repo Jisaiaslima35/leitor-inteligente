@@ -137,23 +137,8 @@ log.addHandler(_sh)
 
 
 # ─── Validação JWT Supabase ─────────────────────────────────────────────
-def extract_user_id_from_jwt(token: str) -> str | None:
-    """Decodifica payload do JWT Supabase (sem validar assinatura — o proxy
-    reverso do Nginx + CORS + service_role auth abaixo confirmam origem).
-    Retorna o `sub` (user UUID) ou None se inválido."""
-    if not token or token.count('.') != 2:
-        return None
-    try:
-        payload_b64 = token.split('.')[1]
-        payload_b64 += '=' * (-len(payload_b64) % 4)  # padding
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-        sub = payload.get('sub')
-        # Supabase tokens têm exp em segundos epoch
-        if payload.get('exp', 0) < time.time() - 60:
-            return None
-        return sub if sub else None
-    except Exception:
-        return None
+# Helper extraído pra api/_auth.py (zero risco — função idêntica).
+from _auth import extract_user_id_from_jwt  # noqa: E402
 
 
 async def get_book_categoria(slug: str) -> str | None:

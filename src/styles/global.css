@@ -448,6 +448,18 @@ input, textarea { font: inherit; color: inherit; }
   50%      { box-shadow: 0 0 0 6px rgba(31, 111, 94, 0); }
 }
 
+/* 06/09/2026 v9 Isaías: pulse suave no ícone do botão "Estudar em Dupla".
+   Não é a box-shadow inteira — só o ícone Users — pra não competir
+   com o efeito de hover scale-105 do botão. Loop infinito 2s. */
+@keyframes collab-pulse {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%      { opacity: 0.85; transform: scale(1.08); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .icon-btn .pulse-icon,
+  [style*="collab-pulse"] { animation: none !important; }
+}
+
 /* Toggle do Modo Mentor (Modo Autor) — Professor IA do Leitor.
    Aparece no composer do chat SÓ quando o livro tem skill de Mentor carregada
    (verifica /has-skill?bookSlug=<slug> no mount). Pitfall: configurado em

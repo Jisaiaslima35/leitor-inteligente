@@ -25,6 +25,7 @@ import { DevPage } from './pages/DevPage'
 import { CheckoutModal } from './components/CheckoutModal'
 import { AuthProvider, useAuth } from './lib/AuthContext'
 import { supabase, SUPABASE_READY } from './lib/supabase'
+import { isAdminEmail, isAdminUser } from './lib/admin'
 
 export type Route = 'home' | 'store' | 'library' | 'reader' | 'admin' | 'login' | 'upload' | 'comprar' | 'dev'
 
@@ -54,8 +55,14 @@ function clearPendingBuy() {
 
 const PROTECTED: Route[] = ['library', 'reader', 'admin', 'upload']
 
-/** Lê o hash e também extrai `?src=...` (traffic source da campanha). */
-function readRoute(): { route: Route; bookId?: string; trafficSource?: string } {
+/** Lê o hash e também extrai `?src=...` (traffic source da campanha) e
+ *  `?room=<uuid>` (Painel de Estudo em Dupla). */
+function readRoute(): {
+  route: Route
+  bookId?: string
+  trafficSource?: string
+  room?: string
+} {
   if (typeof window === 'undefined') return { route: 'home' }
   const rawHash = window.location.hash.replace('#/', '')
   const [pathPart, queryPart] = rawHash.split('?')
@@ -63,16 +70,19 @@ function readRoute(): { route: Route; bookId?: string; trafficSource?: string } 
   const route = (routePart as Route) || 'home'
   const bookId = bookPart ? decodeURIComponent(bookPart) : undefined
   let trafficSource: string | undefined
+  let room: string | undefined
   if (queryPart) {
     const params = new URLSearchParams(queryPart)
     trafficSource = params.get('src') || undefined
+    const r = params.get('room')
+    if (r && /^[a-zA-Z0-9_-]{4,64}$/.test(r)) room = r
   }
-  return { route, bookId, trafficSource }
+  return { route, bookId, trafficSource, room }
 }
 
 function InnerApp() {
   const { user, isAuthenticated, isReady, signOut } = useAuth()
-  const [{ route, bookId, trafficSource }, setRouteState] = useState(() => readRoute())
+  const [{ route, bookId, trafficSource, room }, setRouteState] = useState(() => readRoute())
   // Inicializa vazio; o useEffect de sync popula quando autenticado
   const [library, setLibrary] = useState<LibraryState>({ purchases: [] })
   const [progress, setProgress] = useState<ProgressState>({})
@@ -146,48 +156,117 @@ function InnerApp() {
         setRouteState({ route: 'login' })
         return
       }
+      // 05/09/2026 (v8 Isaías): rota /admin exclusiva do admin (email
+      // Brisacamera34@gmail.com OU user.id === ADMIN_USER_ID). Usuário
+      // comum tentando navegar é redirecionado pra /library.
+      if (nextRoute === 'admin' && !(isAdminEmail(user.email) || isAdminUser(user))) {
+        window.location.hash = '#/library'
+        setRouteState({ route: 'library' })
+        return
+      }
       const hashValue = nextBookId ? `#/${nextRoute}/${encodeURIComponent(nextBookId)}` : `#/${nextRoute}`
       window.location.hash = hashValue
       setRouteState({ route: nextRoute, bookId: nextBookId })
       if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
     },
-    [isAuthenticated],
+    [isAuthenticated, user.email, user.id],
   )
 
   // Vitrine = Supabase (filtro server-side admin+publicado+preço>0).
   // O CATALOG hardcoded foi desativado em src/domain/catalog.ts — não usar mais.
   // Pra abrir /reader/{id}, busca o slug OU id direto no Supabase.
+  //
+  // 04/09/2026 (v3): quando guest (`!isAuthenticated`) + `?room=<id>` válido,
+  // busca metadata via endpoint público `/guest-meta` que valida sala viva.
+  // SEM `?room=` guest continua sendo bloqueado (vai pra LoginPage na rota).
+  const [guestRoomAlive, setGuestRoomAlive] = useState<boolean | null>(null)
+  // 05/09 Isaías (v4): dono tem prioridade. `loadedAsGuest=true` só quando
+  // o book veio via /guest-meta (anônimo OU logado sem o livro). Quando o
+  // usuário logado tem o livro, `loadEbookBySlug` resolve e loadedAsGuest
+  // fica false → renderiza como host (não cai em "sessão expirada").
+  const [loadedAsGuest, setLoadedAsGuest] = useState<boolean>(false)
   useEffect(() => {
     let cancelled = false
     setDynamicBook(null)
+    setGuestRoomAlive(null)
+    setLoadedAsGuest(false)
     if (!bookId) return
-    if (!isAuthenticated || !SUPABASE_READY) return
 
-    loadEbookBySlug(bookId).then((row) => {
-      if (cancelled || !row) return
-      // 23/08/2026: whitelist da categoria pra não confiar no que vem do
-      // Supabase (mesma defesa do catalogSupabase.ts). Se vier NULL ou
-      // inválido, cai pra 'outros' e o botão Área Dev se esconde.
-      const CATEGORIAS_VALIDAS = new Set(['programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros'])
-      const cat: Categoria = row.categoria && CATEGORIAS_VALIDAS.has(row.categoria)
-        ? (row.categoria as Categoria)
+    const applyMeta = (meta: { id?: string; slug?: string; ebook_id?: string; title?: string; author?: string; cover_url?: string; categoria?: string; total_pages?: number }) => {
+      const CATEGORIAS_VALIDAS = new Set(['programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros', 'comum'])
+      const cat: Categoria = meta.categoria && CATEGORIAS_VALIDAS.has(meta.categoria)
+        ? (meta.categoria as Categoria)
         : 'outros'
-      const virtual: Book = {
-        id: bookId,
-        title: row.title,
-        author: row.author,
-        cover: row.cover_url || '',
+      // 05/09/2026 (v7): ordem de prioridade é slug > id > ebook_id > hash.
+      // loadEbookBySlug() retorna o slug E ebook_id, mas applyMeta lia só
+      // o ebook_id (uuid interno) — daí o `book.id` virava UUID ao invés
+      // de slug, e toda chamada ao Supabase filtrava por UUID → 406.
+      // Ordem:
+      //   1. meta.slug     (campo real retornado por loadEbookBySlug)
+      //   2. meta.id       (slug retornado por /guest-meta)
+      //   3. meta.ebook_id (uuid, só pra emergencies)
+      //   4. bookId        (fallback do hash router)
+      const slug = meta.slug || meta.id || meta.ebook_id || bookId
+      setDynamicBook({
+        id: slug,
+        title: meta.title || bookId,
+        author: meta.author || '',
+        cover: meta.cover_url || '',
         description: '',
         price: 0,
-        totalPages: row.total_pages,
+        totalPages: meta.total_pages || 100,
         highlights: [],
         chunks: [],
         categoria: cat,
-      }
-      setDynamicBook(virtual)
-    })
-    return () => { cancelled = true }
-  }, [bookId, isAuthenticated])
+      })
+    }
+
+    // ── DONO (autenticado + Supabase pronto) tem prioridade absoluta ──
+    // Se loadEbookBySlug achar o livro na biblioteca, é dono: ignora o
+    // /guest-meta mesmo com ?room= na URL. O CollabPanel continua
+    // funcionando porque `roomId` é passado pro ReaderPage via prop.
+    if (isAuthenticated && SUPABASE_READY) {
+      loadEbookBySlug(bookId).then((row) => {
+        if (cancelled) return
+        if (row) {
+          // DONO — book veio da biblioteca, guestMode fica false.
+          applyMeta(row as any)
+          setLoadedAsGuest(false)
+          return
+        }
+        // Logado mas SEM o livro: cai no fluxo de convidado SE tiver ?room=
+        if (room) fetchGuestMeta()
+        // Sem room + sem livro → null dinâmico → tela "Livro não encontrado"
+      })
+      return () => { cancelled = true }
+    }
+
+    // ── GUEST anônimo: só entra se tiver convite ──
+    if (!isAuthenticated) {
+      if (!room) return // sem convite → LoginPage (proteção de venda)
+      fetchGuestMeta()
+      return () => { cancelled = true }
+    }
+
+    // Helper interno: carrega metadata via endpoint público + marca guestMode
+    function fetchGuestMeta() {
+      fetch(`${import.meta.env.BASE_URL}signed-url-api/guest-meta?slug=${encodeURIComponent(bookId)}&room_id=${encodeURIComponent(room)}`)
+        .then((r) => r.json().then((j) => ({ status: r.status, body: j })))
+        .then((result) => {
+          if (cancelled) return
+          if (result.status !== 200 || !result.body?.id) {
+            setGuestRoomAlive(false)
+            return
+          }
+          applyMeta(result.body)
+          setGuestRoomAlive(true)
+          setLoadedAsGuest(true)
+        })
+        .catch(() => {
+          if (!cancelled) setGuestRoomAlive(false)
+        })
+    }
+  }, [bookId, isAuthenticated, room])
 
   const activeBook: Book | undefined = dynamicBook ?? undefined
 
@@ -275,13 +354,48 @@ function InnerApp() {
         {route === 'library' && !isAuthenticated && (
           <LoginPage onBack={() => navigate('home')} onSuccess={() => navigate('library')} />
         )}
-        {route === 'reader' && activeBook && isAuthenticated && (
+        {route === 'reader' && activeBook && isAuthenticated && !loadedAsGuest && (
+          // DONO: autenticado E livro veio da biblioteca (via loadEbookBySlug).
+          // Tem prioridade absoluta — ignora `?room=` pro carregamento, mas o
+          // `roomId` continua sendo passado pro ReaderPage abrir o CollabPanel.
           <ReaderPage
             book={activeBook}
             progress={progress}
             onTrack={handleTrack}
             onOpenDev={(bookId) => navigate('dev', bookId)}
+            roomId={room}
+            onCloseCollab={() => navigate('reader', activeBook.id)}
           />
+        )}
+        {route === 'reader' && activeBook && loadedAsGuest && (
+          // CONVIDADO da sala: book veio via /guest-meta (anônimo OU logado
+          // sem o livro). onTrack NO-OP — progresso fica só local.
+          <ReaderPage
+            book={activeBook}
+            progress={progress}
+            onTrack={() => { /* guest de sala: progresso fica só local */ }}
+            onOpenDev={() => undefined}
+            roomId={room}
+            onCloseCollab={() => navigate(isAuthenticated ? 'library' : 'store')}
+            guestMode={true}
+          />
+        )}
+        {route === 'reader' && room && guestRoomAlive === false && (
+          // 04/09/2026 (v3): sala expirou enquanto carregava. Tela de compra
+          // (proteção de venda — livro nunca vinculado à conta do guest).
+          <section>
+            <h2 style={{ marginTop: 0 }}>⏱️ Sessão de leitura expirada</h2>
+            <p style={{ color: 'var(--muted)' }}>
+              A sala do <strong>Estudo em Dupla</strong> terminou — o anfitrião saiu ou passou do tempo limite.
+            </p>
+            <p style={{ color: 'var(--muted)' }}>
+              Pra continuar lendo <em>{bookId}</em>, você pode comprar o livro ou pedir um novo convite.
+            </p>
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
+              <button className="btn btn-primary" onClick={() => navigate('comprar', bookId)}>🛒 Comprar o livro</button>
+              <button className="btn btn-ghost" onClick={() => navigate('store')}>← Ver loja</button>
+            </div>
+          </section>
         )}
         {route === 'reader' && !activeBook && bookId && isAuthenticated && (
           <section>
@@ -316,24 +430,43 @@ function InnerApp() {
             // navigate(route, bookId?) — sem o bookId aqui o ReaderPage nunca
             // acha o livro.
             onBack={() => navigate(activeBook ? 'reader' : 'library', activeBook?.id)}
+            roomId={room}
+            onCloseCollab={() => navigate('dev', activeBook?.id)}
           />
         )}
         {route === 'dev' && !isAuthenticated && (
           <LoginPage onBack={() => navigate('home')} onSuccess={() => navigate('dev')} />
         )}
-        {route === 'reader' && activeBook && !isAuthenticated && (
+        {route === 'reader' && !isAuthenticated && !room && (
+          // Guest SEM ?room= → tela de login (proteção de venda).
+          // Com ?room= + sala viva → vai pro ReaderPage (acima).
           <LoginPage
             onBack={() => navigate('home')}
-            onSuccess={() => navigate('reader', activeBook.id)}
+            onSuccess={() => navigate('reader', bookId)}
           />
         )}
-        {route === 'admin' && (
+        {route === 'admin' && (isAdminEmail(user.email) || isAdminUser(user)) && (
           <AdminPage
             library={library}
             progress={progress}
             user={user}
             onReset={handleResetLibrary}
           />
+        )}
+        {route === 'admin' && !(isAdminEmail(user.email) || isAdminUser(user)) && (
+          // 05/09/2026 (v8 Isaías): guarda adicional no render — se o
+          // usuário digitou #/admin direto na URL e não é admin, manda
+          // pra biblioteca via hash (o listener de hashchange já cuida).
+          // Doble check porque navigate() pode ter sido burlado.
+          <section>
+            <h2 style={{ marginTop: 0 }}>🔒 Acesso restrito</h2>
+            <p style={{ color: 'var(--muted)' }}>
+              Esta área é exclusiva do administrador do Leitor Inteligente.
+            </p>
+            <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+              <button className="btn btn-primary" onClick={() => navigate('library')}>← Voltar à biblioteca</button>
+            </div>
+          </section>
         )}
         {route === 'comprar' && bookId && (
           <BuyPage

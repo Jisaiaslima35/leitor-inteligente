@@ -4,6 +4,15 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
   base: '/leitor-inteligente/',
+  // 04/09/2026: y-monaco importa `monaco-editor/esm/vs/editor/editor.api.js`
+  // mas o pacote monaco-editor não exporta esse subpath no campo "exports".
+  // Resolvemos manualmente pro arquivo real pra Vite conseguir bundlar.
+  resolve: {
+    alias: {
+      'monaco-editor/esm/vs/editor/editor.api.js':
+        '/root/projetos/leitor-inteligente/node_modules/monaco-editor/esm/vs/editor/editor.api.js',
+    },
+  },
   plugins: [
     react(),
     VitePWA({

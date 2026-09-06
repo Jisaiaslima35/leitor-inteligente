@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { ChevronLeft, ChevronRight, Mic, Pause, Play, Send, Sparkles, Target, Volume2, VolumeX, ZoomIn, ZoomOut, Code2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, useCallback, Suspense } from 'react'
+import { ChevronLeft, ChevronRight, Mic, Pause, Play, Send, Sparkles, Target, Volume2, VolumeX, ZoomIn, ZoomOut, Code2, Users } from 'lucide-react'
 import type { Book } from '../domain/types'
 import type { ProgressState } from '../domain/library'
 import { getProgress } from '../domain/progress'
@@ -10,6 +10,7 @@ import { QuizScoreBoard } from '../components/QuizScoreBoard'
 import { ChecklistCapitulo } from '../components/ChecklistCapitulo'
 import { SelectionToolbar, type SelectionInfo, type HighlightColor } from '../components/SelectionToolbar'
 import { AnnotationModal, type Highlight } from '../components/AnnotationModal'
+import CollabPanel, { newRoomId } from '../components/CollabPanel'
 import type { RagSource } from '../domain/rag'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
@@ -40,27 +41,102 @@ function getSpeechRecognition(): SpeechRecognitionLike | null {
   return w.SpeechRecognition ? new w.SpeechRecognition() : w.webkitSpeechRecognition ? new w.webkitSpeechRecognition() : null
 }
 
+// 05/09/2026 Isaías: o projeto não usa react-router (routing é manual via
+// hash + readRoute() no App.tsx). Equivalente direto do `useParams()` —
+// extrai o slug do hash atual SEM depender de prop/state que ainda podem
+// estar vazios no momento do dispatch do fetch. Se hash vazio, retorna ''.
+function getSlugFromHash(): string {
+  if (typeof window === 'undefined') return ''
+  const raw = (window.location.hash || '').replace(/^#\/?/, '')
+  const [pathPart] = raw.split('?')
+  const [, slug] = pathPart.split('/')
+  return slug ? decodeURIComponent(slug) : ''
+}
+
 interface Props {
   book: Book
   progress: ProgressState
   onTrack: (book: Book, page: number) => void
   onOpenDev?: (bookId: string) => void
+  // 04/09/2026: Painel de Estudo em Dupla — vem do `?room=<uuid>` na URL
+  roomId?: string
+  onCloseCollab?: () => void
+  // 04/09/2026 (v3): guest=true → usa /guest-sign, NÃO chama onTrack,
+  // banner de "leitura temporária", sem persistência cloud.
+  guestMode?: boolean
 }
 
-export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
+export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onCloseCollab, guestMode }: Props) {
   const { user } = useAuth()
   const userId = user.id
   const [pdfUrl, setPdfUrl] = useState<string | null>(null)
   const [pdfError, setPdfError] = useState<string | null>(null)
   const [pdfLoading, setPdfLoading] = useState(true)
+  // 04/09/2026: token atual do Supabase pro Painel de Estudo em Dupla.
+  // Cache simples — refresh do token não precisa invalidar a sala, o servidor
+  // aceita JWT novo a cada reconexão.
+  const [jwtToken, setJwtToken] = useState<string>('')
+  useEffect(() => {
+    let cancelled = false
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return
+      setJwtToken(data.session?.access_token || '')
+    })
+    return () => { cancelled = true }
+  }, [])
 
-  // Busca signed URL do Supabase Storage (TTL 60min) antes de renderizar
+  // Busca signed URL do Supabase Storage antes de renderizar.
+  // 04/09/2026 (v3): guest usa /guest-sign (valida sala viva, TTL 5min).
+  // Logado continua usando /sign (TTL 60min, valida user_library).
+  // 05/09/2026 (v5): extrai slug direto do window.location.hash
+  // (equivalente ao useParams() do react-router, mas o projeto usa hash
+  // router manual). Valida ANTES do fetch pra não disparar com slug vazio
+  // (causava 400 "slug obrigatório" no backend /sign). hashchange listener
+  // adicionado pra dispatchar de novo se o user trocar de livro.
   useEffect(() => {
     let cancelled = false
     setPdfLoading(true)
     setPdfError(null)
     setPdfUrl(null)
-    // Pega JWT do session atual pra autenticar no backend
+
+    // Fonte da verdade: slug do hash da URL. Pode estar undefined em SSR,
+    // então fallback pro book.id da prop (vai bater porque o reader só
+    // renderiza quando activeBook já existe).
+    const hashSlug = getSlugFromHash()
+    const slug = hashSlug || book.id || ''
+    if (!slug) {
+      setPdfError('slug obrigatório — rota inválida')
+      setPdfLoading(false)
+      return
+    }
+
+    if (guestMode && roomId) {
+      // Convidado do Estudo em Dupla — sem JWT, validado pela sala viva
+      ;(async () => {
+        try {
+          const r = await fetch(`${import.meta.env.BASE_URL}signed-url-api/guest-sign`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ slug, room_id: roomId }),
+          })
+          const body = await r.json()
+          if (cancelled) return
+          if (r.status !== 200 || !body?.url) {
+            setPdfError(body?.error || `HTTP ${r.status}`)
+          } else {
+            setPdfUrl(body.url)
+          }
+          setPdfLoading(false)
+        } catch (e) {
+          if (cancelled) return
+          setPdfError(String(e))
+          setPdfLoading(false)
+        }
+      })()
+      return
+    }
+
+    // Logado: signed URL normal via JWT Supabase
     supabase.auth.getSession().then(({ data: sessionData }) => {
       if (cancelled) return
       const accessToken = sessionData.session?.access_token
@@ -75,7 +151,7 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({ slug: book.id }),
+        body: JSON.stringify({ slug }),
       })
     })
       .then((r) => (r ? r.json().then((j) => ({ status: r.status, body: j })) : null))
@@ -97,7 +173,7 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
     return () => {
       cancelled = true
     }
-  }, [book.id])
+  }, [book.id, guestMode, roomId])
 
   const initial = useMemo(() => {
     const saved = getProgress(progress, userId, book.id)?.page ?? 1
@@ -290,14 +366,26 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
     setMessages((current) => [...current, { id: `u-${stamp}`, role: 'user', text }])
     setInput('')
     setThinking(true)
+    // 05/09/2026 (v6): defesa contra book.id undefined no chat (igual
+    // fizemos no /sign). Hash da URL é fonte da verdade.
+    const safeSlug = book.id || getSlugFromHash()
+    if (!safeSlug) {
+      setThinking(false)
+      setMessages((current) => [...current, {
+        id: `e-${stamp}`,
+        role: 'ai',
+        text: 'Não consegui identificar o livro. Tente recarregar a página.',
+      }])
+      return
+    }
     try {
       // Roteia pra API semântica DEDICADA do livro (porta 9135 p/ Fabricante, 9131 p/ genérica)
-      // URL montado: /<book.id>/semantic-api/semantic-ask (nginx roteia pra porta certa)
-      const semanticUrl = `/${book.id}/semantic-api/semantic-ask`
+      // URL montado: /<slug>/semantic-api/semantic-ask (nginx roteia pra porta certa)
+      const semanticUrl = `/${safeSlug}/semantic-api/semantic-ask`
       const response = await fetch(semanticUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: text, currentPage: page, bookSlug: book.id, modo_mentor: modoMentor }),
+        body: JSON.stringify({ question: text, currentPage: page, bookSlug: safeSlug, modo_mentor: modoMentor }),
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'Falha ao consultar o livro')
@@ -546,6 +634,50 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
         <h2>{book.title}</h2>
         <small>{book.author}</small>
       </div>
+      {guestMode && (
+        // 04/09/2026 (v3): convidado do Estudo em Dupla — leitura temporária
+        // enquanto o anfitrião mantém a sala aberta. Sem login, sem
+        // persistência cloud. Banner lembra que progresso fica só local.
+        <div
+          className="guest-banner"
+          role="status"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '10px 14px',
+            margin: '8px 0 16px',
+            borderRadius: 8,
+            border: '1px solid #c7a13c',
+            background: 'linear-gradient(180deg, #fff8e1 0%, #fff3cd 100%)',
+            color: '#6b4f00',
+            fontSize: 14,
+            flexWrap: 'wrap',
+          }}
+        >
+          <span aria-hidden="true" style={{ fontSize: 18 }}>👥</span>
+          <span style={{ flex: 1, minWidth: 200 }}>
+            <strong>Leitura como convidado</strong> — você entrou pelo convite do Estudo em Dupla.
+            Esta sessão é temporária: quando o anfitrião sair, a leitura expira em ~2 minutos.
+            {' '}
+            <a
+              href={`#/comprar/${encodeURIComponent(book.id)}`}
+              style={{ color: '#6b4f00', textDecoration: 'underline', marginLeft: 4 }}
+            >
+              Quer comprar o livro?
+            </a>
+          </span>
+          {onCloseCollab && (
+            <button
+              className="btn-ghost"
+              onClick={onCloseCollab}
+              style={{ background: 'transparent', border: '1px solid #c7a13c', color: '#6b4f00' }}
+            >
+              Sair do convite
+            </button>
+          )}
+        </div>
+      )}
       <div className="pdf-toolbar">
         {/* Fileira 1 — navegação de página (compacta em mobile) */}
         <div className="pdf-toolbar-row">
@@ -800,6 +932,89 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev }: Props) {
         pageText={pageText}
         onScoreSaved={() => setScoreReloadKey((k) => k + 1)}
       />
+      {/* 06/09/2026 v9 Isaías: polimento visual do botão "Estudar em Dupla".
+          - Esconde quando o painel já tá aberto (`roomId` setado) pra não
+            duplicar com o cabeçalho "👥 Estudo em Dupla" do painel.
+          - Estilo premium: degradê emerald/teal/cyan harmonizando com o
+            tom do Placar do Quiz (roxo/âmbar da paleta), texto branco,
+            cantos arredondados, sombra + hover scale-105.
+          - Posicionado centralizado abaixo do QuizScoreBoard (my-4 = respiro). */}
+      {!roomId && (
+        <div style={{ display: 'flex', justifyContent: 'center', margin: '16px 0' }}>
+          <button
+            type="button"
+            onClick={() => {
+              const rid = newRoomId()
+              const next = `${window.location.hash.split('?')[0]}?room=${rid}`
+              window.location.hash = next
+            }}
+            title="Abrir painel de estudo em dupla (gera link copiável)"
+            aria-label="Estudar em Dupla"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '12px 24px',
+              borderRadius: 999,
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: 15,
+              fontWeight: 600,
+              color: '#fff',
+              // Degradê: emerald-600 → teal-600 → cyan-600 (Tailwind v3
+              // equivalent). Tons frios que conversam com a paleta roxo/âmbar
+              // sem competir visualmente com o Placar do Quiz.
+              background: 'linear-gradient(90deg, #059669 0%, #0d9488 50%, #0891b2 100%)',
+              boxShadow: '0 4px 14px rgba(5, 150, 105, 0.35)',
+              transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = 'translateY(-1px) scale(1.03)'
+              e.currentTarget.style.boxShadow = '0 8px 22px rgba(5, 150, 105, 0.45)'
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = 'translateY(0) scale(1)'
+              e.currentTarget.style.boxShadow = '0 4px 14px rgba(5, 150, 105, 0.35)'
+            }}
+          >
+            <span style={{
+              display: 'inline-flex',
+              animation: 'collab-pulse 2s ease-in-out infinite',
+            }}>
+              <Users size={18} />
+            </span>
+            <span>Estudar em Dupla</span>
+          </button>
+        </div>
+      )}
+      {roomId && (
+        <Suspense fallback={null}>
+          <CollabPanel
+            roomId={roomId}
+            // 04/09/2026 (v4): guest gera display_name persistente (sem user.name).
+            // logado usa user.name → user.email → 'Leitor'.
+            displayName={
+              guestMode
+                ? (() => {
+                    const KEY = 'leitor-ia:guest-name'
+                    const cached = typeof window !== 'undefined' ? localStorage.getItem(KEY) : null
+                    const name = cached || `Convidado ${Math.floor(1000 + Math.random() * 9000)}`
+                    try { localStorage.setItem(KEY, name) } catch { /* sem storage */ }
+                    return name
+                  })()
+                : (user?.name || user?.email?.split('@')[0] || 'Leitor')
+            }
+            jwtToken={jwtToken}
+            isAuthenticated={!!user?.id && !guestMode}
+            defaultMode="text"
+            onClose={() => {
+              const base = window.location.hash.split('?')[0]
+              window.location.hash = base
+              onCloseCollab?.()
+            }}
+          />
+        </Suspense>
+      )}
     </section>
   )
 }

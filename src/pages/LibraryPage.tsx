@@ -40,48 +40,47 @@ export function LibraryPage({ progress, onNavigate }: Props) {
       setLoading(true)
       setError(null)
       try {
-        // View inclui: user_library (do user) UNION ALL ebooks globais
-        // (globais aparecem pra todo mundo, sem precisar de user_library row)
+        // 05/09/2026 (v8 Isaías): Minha Biblioteca = estritamente livros
+        // COMPRADOS/ADICIONADOS pelo user. Livros globais do Modo Mentor
+        // aparecem SÓ na vitrine pública (#/store, #/home) com o badge.
+        // Antes usava view `user_library_with_globals` que injetava
+        // is_global=true pra todo mundo — daí qualquer user logado via 4
+        // livros que nunca comprou. Fix: query direta em user_library +
+        // JOIN com ebooks pra metadata.
         const { data, error: e1 } = await supabase
-          .from('user_library_with_globals')
+          .from('user_library')
           .select(`
             user_id, purchased_at, payment_status,
-            ebook_id, slug, title, author, cover_url,
-            pdf_storage_path, total_pages, owner_user_id,
-            is_global, skill_generated
+            ebooks!inner(
+              ebook_id:id, slug, title, author, cover_url,
+              pdf_storage_path, total_pages, owner_user_id,
+              is_global, skill_generated
+            )
           `)
-          .order('is_global', { ascending: false })
+          .eq('user_id', userId)
           .order('purchased_at', { ascending: false, nullsFirst: false })
 
         if (e1) throw e1
         if (cancelled) return
 
-        // Dedup: se user já comprou um global, vem 2x (1 confirmed + 1 global). Mantém confirmed.
-        const seen = new Set<string>()
         const rows: LibraryBook[] = []
         for (const row of (data || []) as any[]) {
-          if (row.user_id !== userId && row.is_global) {
-            // é global "virtual" pra esse user, normal
-          } else if (row.user_id !== userId) {
-            // não é do user e não é global → ignora (RLS já filtra, mas defensivo)
-            continue
-          }
-          if (seen.has(row.slug)) continue
-          seen.add(row.slug)
+          const eb = row.ebooks
+          if (!eb || !eb.slug) continue
           rows.push({
-            id: row.slug,
-            ebook_id: row.ebook_id,
-            slug: row.slug,
-            title: row.title,
-            author: row.author,
-            cover_url: row.cover_url,
-            pdf_storage_path: row.pdf_storage_path,
-            total_pages: row.total_pages || 0,
-            owner_user_id: row.owner_user_id,
+            id: eb.slug,
+            ebook_id: eb.ebook_id,
+            slug: eb.slug,
+            title: eb.title,
+            author: eb.author,
+            cover_url: eb.cover_url,
+            pdf_storage_path: eb.pdf_storage_path,
+            total_pages: eb.total_pages || 0,
+            owner_user_id: eb.owner_user_id,
             purchased_at: row.purchased_at,
             payment_status: row.payment_status,
-            is_global: !!row.is_global,
-            skill_generated: !!row.skill_generated,
+            is_global: !!eb.is_global,
+            skill_generated: !!eb.skill_generated,
           })
         }
         setBooks(rows)

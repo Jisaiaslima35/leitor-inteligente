@@ -21,13 +21,14 @@
 // Posição de leitura do PDF: NÃO persiste (não confundir com o progresso do Reader).
 
 import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
-import { BookOpen, ChevronLeft, ChevronRight, MessageCircle, Pause, Play, RefreshCw, Send, Sparkles, Terminal, Trash2, Code2, ZoomIn, ZoomOut } from 'lucide-react'
+import { BookOpen, ChevronLeft, ChevronRight, MessageCircle, Pause, Play, RefreshCw, Send, Sparkles, Terminal, Trash2, Code2, ZoomIn, ZoomOut, Users } from 'lucide-react'
 import Editor from '@monaco-editor/react'
 import { PdfViewer } from '../components/PdfViewer'
 import { XtermTerminal } from '../components/XtermTerminal'
 import { openTerminal, type TerminalSession } from '../lib/devSocket'
 import { useAuth } from '../lib/AuthContext'
 import { supabase, SUPABASE_READY } from '../lib/supabase'
+import CollabPanel, { newRoomId } from '../components/CollabPanel'
 import type { Book } from '../domain/types'
 
 // P9 (24/08/2026): Sandpack pesado (~608KB), lazy load só quando seleciona "Projeto Web"
@@ -97,6 +98,9 @@ interface ChatMsg {
 interface DevPageProps {
   book?: Book | null
   onBack: () => void
+  // 04/09/2026: Painel de Estudo em Dupla — vem do `?room=<uuid>` na URL
+  roomId?: string
+  onCloseCollab?: () => void
 }
 
 const STARTERS: Record<Lang, string> = {
@@ -132,9 +136,19 @@ function sessionKey(bookId: string | undefined): string {
   return `leitor-dev:${bookId || 'anon'}:turns`
 }
 
-export function DevPage({ book, onBack }: DevPageProps) {
+export function DevPage({ book, onBack, roomId, onCloseCollab }: DevPageProps) {
   const { user } = useAuth()
   const userId = user.id
+  const [jwtToken, setJwtToken] = useState<string>('')
+  useEffect(() => {
+    if (!SUPABASE_READY) return
+    let cancelled = false
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return
+      setJwtToken(data.session?.access_token || '')
+    })
+    return () => { cancelled = true }
+  }, [])
   const [language, setLanguage] = useState<Lang>('python')
   const [code, setCode] = useState<string>(STARTERS[DEFAULT_LANG])
   const [turns, setTurns] = useState<FeedbackTurn[]>([])
@@ -935,6 +949,70 @@ export function DevPage({ book, onBack }: DevPageProps) {
         <div className="dev-empty">
           Nenhuma execução ainda. Escreve código acima e clica em <strong>Rodar</strong>.
         </div>
+      )}
+      {/* 06/09/2026 v9 Isaías: mesmo botão premium do ReaderPage — esconda
+          quando o painel já tá aberto (roomId setado) pra não duplicar com
+          o cabeçalho unificado do painel. */}
+      {!roomId && (
+        <div style={{ display: 'flex', justifyContent: 'center', margin: '16px 0' }}>
+          <button
+            type="button"
+            onClick={() => {
+              const rid = newRoomId()
+              const next = `${window.location.hash.split('?')[0]}?room=${rid}`
+              window.location.hash = next
+            }}
+            title="Abrir painel de estudo em dupla (gera link copiável)"
+            aria-label="Estudar em Dupla"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '12px 24px',
+              borderRadius: 999,
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: 15,
+              fontWeight: 600,
+              color: '#fff',
+              background: 'linear-gradient(90deg, #059669 0%, #0d9488 50%, #0891b2 100%)',
+              boxShadow: '0 4px 14px rgba(5, 150, 105, 0.35)',
+              transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = 'translateY(-1px) scale(1.03)'
+              e.currentTarget.style.boxShadow = '0 8px 22px rgba(5, 150, 105, 0.45)'
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = 'translateY(0) scale(1)'
+              e.currentTarget.style.boxShadow = '0 4px 14px rgba(5, 150, 105, 0.35)'
+            }}
+          >
+            <span style={{
+              display: 'inline-flex',
+              animation: 'collab-pulse 2s ease-in-out infinite',
+            }}>
+              <Users size={18} />
+            </span>
+            <span>Estudar em Dupla</span>
+          </button>
+        </div>
+      )}
+      {roomId && (
+        <Suspense fallback={null}>
+          <CollabPanel
+            roomId={roomId}
+            displayName={user?.name || user?.email?.split('@')[0] || 'Dev'}
+            jwtToken={jwtToken}
+            isAuthenticated={!!user?.id}
+            defaultMode="python"
+            onClose={() => {
+              const base = window.location.hash.split('?')[0]
+              window.location.hash = base
+              onCloseCollab?.()
+            }}
+          />
+        </Suspense>
       )}
     </div>
   )

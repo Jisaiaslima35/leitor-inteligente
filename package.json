@@ -21,14 +21,20 @@
     "pdfjs-dist": "latest",
     "react": "latest",
     "react-dom": "latest",
+    "uuid": "^14.0.2",
     "vite": "latest",
-    "vite-plugin-pwa": "latest"
+    "vite-plugin-pwa": "latest",
+    "y-monaco": "^0.1.6",
+    "y-protocols": "^1.0.7",
+    "y-websocket": "^3.1.0",
+    "yjs": "^13.6.32"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "latest",
     "@testing-library/react": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "@types/uuid": "^10.0.0",
     "jsdom": "latest",
     "typescript": "latest",
     "vitest": "latest"

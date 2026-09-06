@@ -9,7 +9,7 @@ import { supabase, SUPABASE_READY } from '../lib/supabase'
 import { CampaignLinkButton } from '../components/CampaignLinkButton'
 import { CategoriaRadioGroup, isCategoriaValida } from '../components/CategoriaRadioGroup'
 import { MentorSkillsPanel } from '../components/MentorSkillsPanel'
-import { ADMIN_USER_ID, isAdminUser } from '../lib/admin'
+import { ADMIN_USER_ID, isAdminEmail, isAdminUser } from '../lib/admin'
 
 const ADMIN_TOKEN = 'admin-bypass-leitor-2026'
 
@@ -89,7 +89,13 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
   const [uploadMsg, setUploadMsg] = useState<string | null>(null)
 
   // Identificação do admin vem de src/lib/admin.ts (centralizada).
-  const isAdmin = isAdminUser(user) || profiles.some((p) => p.id === user.id && p.role === 'admin')
+  // 05/09/2026 (v8 Isaías): regra explícita — email Brisacamera34@gmail.com
+  // OU user.id === ADMIN_USER_ID OU profiles.role==='admin'. Antes só
+  // checava UUID+role, ignorava email.
+  const isAdmin =
+    isAdminEmail(user.email) ||
+    isAdminUser(user) ||
+    profiles.some((p) => p.id === user.id && p.role === 'admin')
 
   const loadAll = async () => {
     if (!SUPABASE_READY) {
@@ -761,8 +767,20 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
         </div>
       )}
 
-      {tab === 'mentor' && (
+      {tab === 'mentor' && isAdmin && (
+        // 05/09/2026 (v8 Isaías): pipeline "Criar eBook Mentor / Gerar Skill"
+        // é exclusiva do admin. Usuário comum NUNCA pode disparar isso.
+        // Dupla camada: App.tsx já bloqueia a rota inteira + esta guarda
+        // evita render do MentorSkillsPanel se outro código setar tab='mentor'.
         <MentorSkillsPanel />
+      )}
+      {tab === 'mentor' && !isAdmin && (
+        <div className="admin-table">
+          <p style={{ color: 'var(--muted)' }}>
+            🔒 Esta seção é exclusiva do administrador. Função "Criar eBook Mentor / Gerar Skill"
+            requer permissão de admin.
+          </p>
+        </div>
       )}
     </section>
   )

@@ -20,6 +20,8 @@ SUPABASE_URL = SUPABASE_ENV.get('SUPABASE_URL', '')
 SUPABASE_SR = SUPABASE_ENV.get('SUPABASE_SERVICE_ROLE', '')
 
 URL_TTL_SECONDS = 60 * 60  # 60 minutos
+GUEST_URL_TTL = 60 * 5      # 5min pro guest (precisa renovar quando expirar)
+COLLAB_STATUS_URL = 'http://127.0.0.1:2006'  # collab_server endpoint HTTP /status
 
 
 def supabase_get(path, headers=None):
@@ -109,11 +111,60 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/health':
-            self.send_json(200, {'status': 'ok', 'service': 'signed-url-api', 'port': 9133})
-        else:
-            self.send_json(404, {'error': 'not found'})
+            return self.send_json(200, {'status': 'ok', 'service': 'signed-url-api', 'port': 9133})
+        # 04/09/2026 (v3): metadata do livro pra guest do Estudo em Dupla.
+        # Valida sala viva e retorna title/author/totalPages/cover/categoria
+        # sem exigir login (convidado não tem conta).
+        if self.path.startswith('/guest-meta'):
+            return self._handle_guest_meta()
+        return self.send_json(404, {'error': 'not found'})
+
+    def _handle_guest_meta(self):
+        """04/09/2026 (v3): metadata pública do livro pra convidado."""
+        from urllib.parse import urlparse, parse_qs
+        try:
+            qs = parse_qs(urlparse(self.path).query)
+            slug = (qs.get('slug') or [''])[0].strip()
+            room_id = (qs.get('room_id') or [''])[0].strip()
+            if not slug or not room_id:
+                return self.send_json(400, {'error': 'slug e room_id obrigatórios'})
+
+            # valida sala viva
+            try:
+                req = Request(f'{COLLAB_STATUS_URL}/collab/{room_id}/status')
+                with urlopen(req, timeout=3) as r:
+                    status = json.loads(r.read())
+            except Exception as e:
+                return self.send_json(503, {'error': f'collab status falhou: {e}'})
+            if not status.get('alive'):
+                return self.send_json(403, {
+                    'error': 'Sala expirada. Peça um novo convite.',
+                    'reason': status.get('reason') or 'sala não está viva',
+                })
+
+            # busca metadata no Supabase
+            ebooks = supabase_get(f'/rest/v1/ebooks?select=id,title,author,cover_url,total_pages,categoria&slug=eq.{slug}&limit=1')
+            if not ebooks:
+                return self.send_json(404, {'error': f'Livro {slug} não encontrado'})
+            eb = ebooks[0]
+            self.send_json(200, {
+                'id': slug,
+                'title': eb.get('title', ''),
+                'author': eb.get('author', ''),
+                'cover_url': eb.get('cover_url', ''),
+                'total_pages': eb.get('total_pages', 100),
+                'categoria': eb.get('categoria') or 'outros',
+                'mode': 'guest',
+                'room_alive': True,
+            })
+        except Exception as e:
+            self.send_json(500, {'error': str(e)[:500]})
 
     def do_POST(self):
+        # 04/09/2026 (v3): rota /guest-sign pra convidados do Estudo em Dupla.
+        # Valida que a sala está viva antes de assinar URL temporária do PDF.
+        if self.path == '/guest-sign':
+            return self._handle_guest_sign()
         if self.path != '/sign':
             return self.send_json(404, {'error': 'not found'})
         try:
@@ -153,6 +204,69 @@ class Handler(BaseHTTPRequestHandler):
                 'url': signed_url,
                 'expiresIn': URL_TTL_SECONDS,
                 'expiresAt': int(time.time()) + URL_TTL_SECONDS,
+            })
+        except Exception as e:
+            self.send_json(500, {'error': str(e)[:500]})
+
+    def _handle_guest_sign(self):
+        """04/09/2026 (v3): signed URL pra guest do Estudo em Dupla.
+        NÃO exige login — exige apenas sala viva (host online OU grace period).
+        TTL menor (5min) pra limitar superfície se URL vazar."""
+        try:
+            n = int(self.headers.get('Content-Length', '0'))
+            data = json.loads(self.rfile.read(n)) if n else {}
+            slug = (data.get('slug') or '').strip()
+            room_id = (data.get('room_id') or '').strip()
+            if not slug or not room_id:
+                return self.send_json(400, {'error': 'slug e room_id obrigatórios'})
+
+            # 1. valida sala viva via collab_server HTTP /status
+            try:
+                req = Request(f'{COLLAB_STATUS_URL}/collab/{room_id}/status')
+                with urlopen(req, timeout=3) as r:
+                    status = json.loads(r.read())
+            except Exception as e:
+                return self.send_json(503, {'error': f'collab status falhou: {e}'})
+            if not status.get('alive'):
+                return self.send_json(403, {
+                    'error': 'Sala expirada ou anfitrião saiu. Peça um novo convite.',
+                    'reason': status.get('reason') or 'sala não está viva',
+                })
+
+            # 2. resolve ebook
+            ebooks = supabase_get(f'/rest/v1/ebooks?select=id,pdf_storage_path&slug=eq.{slug}&limit=1')
+            if not ebooks:
+                return self.send_json(404, {'error': f'Livro {slug} não encontrado'})
+            storage_path = ebooks[0].get('pdf_storage_path')
+            if not storage_path:
+                return self.send_json(500, {'error': 'Livro sem pdf_storage_path'})
+
+            # 3. signed URL temporária (5min)
+            body = json.dumps({'expiresIn': GUEST_URL_TTL}).encode()
+            req = Request(
+                f'{SUPABASE_URL}/storage/v1/object/sign/ebooks/{storage_path}',
+                data=body,
+                headers={
+                    'apikey': SUPABASE_SR,
+                    'Authorization': f'Bearer {SUPABASE_SR}',
+                    'Content-Type': 'application/json',
+                },
+                method='POST',
+            )
+            with urlopen(req, timeout=15) as r:
+                data = json.loads(r.read())
+                signed = data.get('signedURL') or data.get('signedUrl')
+                if not signed:
+                    return self.send_json(500, {'error': 'Falha ao gerar signed URL'})
+                full = f'{SUPABASE_URL}/storage/v1{signed}'
+
+            self.send_json(200, {
+                'url': full,
+                'expiresIn': GUEST_URL_TTL,
+                'expiresAt': int(time.time()) + GUEST_URL_TTL,
+                'mode': 'guest',
+                'room_alive': True,
+                'host_online': status.get('host_online'),
             })
         except Exception as e:
             self.send_json(500, {'error': str(e)[:500]})

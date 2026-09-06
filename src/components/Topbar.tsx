@@ -3,6 +3,7 @@ import { BookOpen, Library, Sparkles, ShoppingBag, Shield, LogIn, LogOut, Flame,
 import type { Route } from '../App'
 import type { User } from '../domain/types'
 import { fetchStreak, type Streak } from '../lib/streak'
+import { isAdminEmail, isAdminUser } from '../lib/admin'
 
 const TABS: { id: Route; label: string; icon: typeof BookOpen }[] = [
   { id: 'home', label: 'Início', icon: Sparkles },
@@ -69,6 +70,12 @@ export function Topbar({ route, onNavigate, user, isAuthenticated, onSignOut }: 
 
   const firstName = (user.name || user.email || 'Você').split(' ')[0]
 
+  // 05/09/2026 (v8 Isaías): aba 🛡️ Admin SÓ aparece pro admin.
+  // Isaías = Brisacamera34@gmail.com OU user.id === ADMIN_USER_ID.
+  // Usuários comuns NÃO devem nem ver a aba (não basta desabilitar — esconde).
+  const isAdmin = isAdminEmail(user.email) || isAdminUser(user)
+  const visibleTabs = TABS.filter((tab) => tab.id !== 'admin' || isAdmin)
+
   return (
     <header className="topbar">
       <div className="brand" onClick={() => onNavigate('home')} role="button">
@@ -76,7 +83,7 @@ export function Topbar({ route, onNavigate, user, isAuthenticated, onSignOut }: 
         <span>Leitor Inteligente</span>
       </div>
       <nav className="nav-tabs" aria-label="Navegação principal">
-        {TABS.map((tab) => {
+        {visibleTabs.map((tab) => {
           const Icon = tab.icon
           return (
             <button

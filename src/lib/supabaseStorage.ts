@@ -169,6 +169,7 @@ export async function loadRemoteUserBooks(): Promise<Array<{
 /** Busca metadados de um ebook específico por slug (cobre livros uploaded). */
 export async function loadEbookBySlug(slug: string): Promise<{
   ebook_id: string
+  slug: string
   title: string
   author: string
   cover_url: string | null
@@ -190,6 +191,7 @@ export async function loadEbookBySlug(slug: string): Promise<{
   if (error || !data) return null
   return {
     ebook_id: data.id,
+    slug: data.slug,
     title: data.title,
     author: data.author,
     cover_url: data.cover_url,
