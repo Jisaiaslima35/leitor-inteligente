@@ -50,7 +50,40 @@ UPLOAD_FINAL_PREFIX = ''    # Quando processado, move pra {user_id}/{ebook_id}/
 # Admin user (Brisacamera34@gmail.com) — pode subir ebook sem checkout/payment.
 # UUID dele no Supabase Auth. Mesmo valor usado no frontend em src/lib/admin.ts.
 ADMIN_USER_ID = '4c347fb6-e66e-4993-b69e-93e966ef8455'
-ADMIN_BYPASS_TOKEN = os.environ.get('LEITOR_ADMIN_TOKEN', 'admin-bypass-leitor-2026')
+# 06/09/2026 v14.1 (segurança pré-divulgação): ADMIN_BYPASS_TOKEN removido.
+# Toda chamada admin agora exige Authorization Bearer JWT válido (ver
+# `_check_admin_request`). Mantida como DEPRECATED por 1 ciclo pra dar
+# rollback fácil — se setar LEITOR_ADMIN_TOKEN, ainda loga WARNING e aceita.
+ADMIN_BYPASS_TOKEN = os.environ.get('LEITOR_ADMIN_TOKEN', '')  # default vazio = desabilitado
+
+import sys as _sys_u
+_sys_u.path.insert(0, '/root/projetos/leitor-inteligente/api')
+from _auth import is_admin_jwt as _is_admin_jwt  # noqa: E402
+
+
+def _check_admin_request(handler) -> tuple[bool, str]:
+    """Valida autorização admin numa request.
+
+    Ordem de prioridade:
+    1. Bearer JWT Supabase válido + email admin / role='admin' → admin
+    2. X-Admin-Token == ADMIN_BYPASS_TOKEN (DEPRECATED) → admin + WARNING no log
+    3. Caso contrário → 403
+
+    Retorna (ok, reason). Quando ok=False, `reason` é descrição do erro.
+    """
+    auth = handler.headers.get('Authorization', '')
+    if auth.lower().startswith('bearer '):
+        token = auth.split(' ', 1)[1].strip()
+        result = _is_admin_jwt(token)
+        if result['ok']:
+            return True, f"bearer:{result['reason']}"
+        return False, f"bearer:{result['reason']}"
+    legacy = handler.headers.get('X-Admin-Token', '')
+    if legacy and ADMIN_BYPASS_TOKEN and legacy == ADMIN_BYPASS_TOKEN:
+        print('[upload-book] WARN X-Admin-Token DEPRECATED — use Authorization Bearer '
+              'JWT da sessão Supabase', flush=True)
+        return True, 'legacy-token-deprecated'
+    return False, 'sem Authorization Bearer válido'
 
 # Limites
 MAX_PDF_MB = 50
@@ -847,13 +880,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == '/api/admin/upload-book':
             # Admin livre: upload SEM pagamento/checkout/upload_payments.
-            # Só pode ser chamado com o token de admin (mesmo do cofre).
+            # v14.1: usa Bearer JWT admin via `_check_admin_request`.
             try:
-                # 1. Valida token de admin (header X-Admin-Token OU campo admin_bypass)
-                admin_token = (
-                    self.headers.get('X-Admin-Token', '')
-                    or self.headers.get('Authorization', '').replace('Bearer ', '')
-                )
+                # 1. Valida autorização admin (Bearer JWT OU X-Admin-Token legacy)
+                admin_ok, admin_reason = _check_admin_request(self)
+                if not admin_ok:
+                    return self.send_json(403, {'error': f'acesso negado: {admin_reason}'})
                 # Lê body multipart
                 n = int(self.headers.get('Content-Length', '0'))
                 body = self.rfile.read(n) if n else b''
@@ -898,11 +930,10 @@ class Handler(BaseHTTPRequestHandler):
                     # confere o filename pra upload
                     pass
 
-                # 2. Valida token (segunda camada: compara com campo do form)
-                form_token = fields.get('admin_token', '')
-                if not admin_token or admin_token != ADMIN_BYPASS_TOKEN:
-                    if not form_token or form_token != ADMIN_BYPASS_TOKEN:
-                        return self.send_json(403, {'error': 'Token de admin inválido'})
+                # 2. v14.1: Authorization já validado no passo 1; rejeita campos
+                #    admin_token do form-data (campo deprecated que vazava no front).
+                if 'admin_token' in fields:
+                    return self.send_json(400, {'error': 'campo admin_token removido — use Authorization Bearer JWT'})
 
                 title = fields.get('title', '').strip() or 'Livro Admin'
                 slug_raw = fields.get('slug', '').strip() or slugify(title)
@@ -1048,12 +1079,11 @@ class Handler(BaseHTTPRequestHandler):
         path_only = urllib_urlparse(self.path).path
         if path_only == '/api/admin/update-book':
             try:
-                admin_token = (
-                    self.headers.get('X-Admin-Token', '')
-                    or self.headers.get('Authorization', '').replace('Bearer ', '')
-                )
-                if admin_token != ADMIN_BYPASS_TOKEN:
-                    return self.send_json(403, {'error': 'Token de admin inválido'})
+                # v14.1: valida Bearer JWT admin (legacy X-Admin-Token ainda
+                # aceito com WARNING por 1 ciclo de migração)
+                admin_ok, admin_reason = _check_admin_request(self)
+                if not admin_ok:
+                    return self.send_json(403, {'error': f'acesso negado: {admin_reason}'})
 
                 n = int(self.headers.get('Content-Length', '0'))
                 body = self.rfile.read(n) if n else b'{}'
@@ -1110,12 +1140,9 @@ class Handler(BaseHTTPRequestHandler):
         path_only = urllib_urlparse(self.path).path
         if path_only == '/api/admin/delete-book':
             try:
-                admin_token = (
-                    self.headers.get('X-Admin-Token', '')
-                    or self.headers.get('Authorization', '').replace('Bearer ', '')
-                )
-                if admin_token != ADMIN_BYPASS_TOKEN:
-                    return self.send_json(403, {'error': 'Token de admin inválido'})
+                admin_ok, admin_reason = _check_admin_request(self)
+                if not admin_ok:
+                    return self.send_json(403, {'error': f'acesso negado: {admin_reason}'})
 
                 ebook_id = (
                     self.headers.get('X-Ebook-Id', '').strip()

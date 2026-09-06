@@ -7,6 +7,12 @@ export default defineConfig({
   // (raiz /) — antes era /leitor-inteligente/ no preview.automacaojs.us.
   // src/lib/baseUrl.ts lê esse valor dinamicamente em runtime.
   base: '/',
+  // 06/09/2026 v14.1 auditoria pré-divulgação: source maps OFF explícito.
+  // Vite default já é false, mas deixar documentado evita alguém habilitar
+  // acidentalmente em build futuro e vazar TS original no DevTools.
+  build: {
+    sourcemap: false,
+  },
   // 04/09/2026: y-monaco importa `monaco-editor/esm/vs/editor/editor.api.js`
   // mas o pacote monaco-editor não exporta esse subpath no campo "exports".
   // Resolvemos manualmente pro arquivo real pra Vite conseguir bundlar.

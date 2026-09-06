@@ -12,7 +12,16 @@ import { MentorSkillsPanel } from '../components/MentorSkillsPanel'
 import { ADMIN_USER_ID, isAdminEmail, isAdminUser } from '../lib/admin'
 import { BASE_URL } from '../lib/baseUrl'
 
-const ADMIN_TOKEN = 'admin-bypass-leitor-2026'
+// 06/09/2026 v14 (segurança pré-divulgação): removido ADMIN_TOKEN hardcoded.
+// Toda chamada admin agora envia `Authorization: Bearer <jwt>` da sessão
+// Supabase do admin. O backend valida email/role — front não tem mais
+// segredo pra vazar no bundle JS.
+async function adminAuthHeaders(): Promise<Record<string, string>> {
+  const { data } = await supabase.auth.getSession()
+  const token = data?.session?.access_token
+  if (!token) throw new Error('Sem sessão Supabase válida — faça login de novo')
+  return { Authorization: `Bearer ${token}` }
+}
 
 interface Props {
   library: LibraryState
@@ -201,7 +210,7 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
         `${BASE_URL}upload-api/api/admin/delete-book?ebook_id=${encodeURIComponent(ebook.id)}`,
         {
           method: 'DELETE',
-          headers: { 'X-Admin-Token': ADMIN_TOKEN },
+          headers: await adminAuthHeaders(),
         },
       )
       const json = await resp.json().catch(() => ({}))
@@ -251,9 +260,10 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
     setEditBusy(true)
     setErr(null)
     try {
+      const auth = await adminAuthHeaders()
       const resp = await fetch(`${BASE_URL}upload-api/api/admin/update-book`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN },
+        headers: { 'Content-Type': 'application/json', ...auth },
         body: JSON.stringify({
           ebook_id: editing.id,
           title: editTitle.trim() || editing.title,
@@ -306,10 +316,10 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
       form.append('price_cents', uploadPrice || '0')
       form.append('is_published', String(uploadPublishing))
       form.append('categoria', uploadCategoria)
-      form.append('admin_token', 'admin-bypass-leitor-2026')
+      // v14.1: Authorization Bearer (sem X-Admin-Token/admin_token estático)
       const resp = await fetch(`${BASE_URL}upload-api/api/admin/upload-book`, {
         method: 'POST',
-        headers: { 'X-Admin-Token': 'admin-bypass-leitor-2026' },
+        headers: await adminAuthHeaders(),
         body: form,
       })
       const json = await resp.json().catch(() => ({}))

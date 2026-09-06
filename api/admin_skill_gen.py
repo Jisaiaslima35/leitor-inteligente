@@ -20,6 +20,9 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
+sys.path.insert(0, '/root/projetos/leitor-inteligente/api')
+from _auth import is_admin_jwt  # noqa: E402
+
 # --- Config ---------------------------------------------------------------
 
 SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://yfnzlowtgnlqizobnslh.supabase.co')
@@ -416,6 +419,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path != '/generate-skill':
             return send_json(self, 404, {'error': 'not found'})
+        # ── v14.1 segurança: exige Authorization Bearer JWT + email admin ──
+        # Substitui o fallback antigo que confiava no token estático.
+        auth = self.headers.get('Authorization', '')
+        if not auth.lower().startswith('bearer '):
+            print('[admin-skill-gen] 401 sem Authorization Bearer', flush=True)
+            return send_json(self, 401, {'error': 'Authorization Bearer <token> obrigatório'})
+        token = auth.split(' ', 1)[1].strip()
+        admin_check = is_admin_jwt(token)
+        if not admin_check['ok']:
+            print(f"[admin-skill-gen] 403 não-admin email={admin_check.get('email')!r} "
+                  f"reason={admin_check.get('reason')}", flush=True)
+            return send_json(self, 403, {'error': f"acesso negado: {admin_check['reason']}"})
+        print(f"[admin-skill-gen] admin OK email={admin_check.get('email')!r} "
+              f"via={admin_check.get('reason')}", flush=True)
         try:
             n = int(self.headers.get('Content-Length', '0'))
             data = json.loads(self.rfile.read(n))
