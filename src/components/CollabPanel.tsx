@@ -19,9 +19,11 @@ import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { MonacoBinding } from 'y-monaco'
 import { v4 as uuidv4 } from 'uuid'
-import { Users, Radio } from 'lucide-react'
+import { Users, Radio, Megaphone, X as XIcon } from 'lucide-react'
 import { fetchJson } from '../lib/fetchJson'
 import { BASE_URL } from '../lib/baseUrl'
+import { openBroadcastHandle, dispatchPttActive, type BroadcastHandle } from '../lib/broadcast'
+import { pcmToBase64DataUrl } from '../lib/audioPcm'
 
 interface CollabPanelProps {
   roomId: string
@@ -95,6 +97,22 @@ export default function CollabPanel({
   const pttStreamRef = useRef<MediaStream | null>(null)
   const pttTimeoutRef = useRef<number | null>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
+  // 07/09/2026 v15 — Estúdio de Transmissão (sala → Devocional 12 harbor 9035)
+  const [onAir, setOnAir] = useState(false)
+  const [onAirStarting, setOnAirStarting] = useState(false)
+  const [onAirSeconds, setOnAirSeconds] = useState(0)
+  const [isRoomHost, setIsRoomHost] = useState(false)
+  const onAirRecorderRef = useRef<MediaRecorder | null>(null)
+  const onAirStreamRef = useRef<MediaStream | null>(null)
+  const onAirHandleRef = useRef<BroadcastHandle | null>(null)
+  const onAirTickRef = useRef<number | null>(null)
+  const onAirStartedAtRef = useRef<number>(0)
+  // v18.1: AudioContext + ScriptProcessorNode (captura PCM direto, sem MediaRecorder)
+  const onAirAudioCtxRef = useRef<AudioContext | null>(null)
+  const onAirProcessorRef = useRef<ScriptProcessorNode | null>(null)
+  const onAirGainRef = useRef<GainNode | null>(null)
+  // v18.2: mixerBus soma mic local + áudios remotos (ptt_audio dos convidados)
+  const onAirMixerRef = useRef<GainNode | null>(null)
 
   const monacoLang = MODES.find((m) => m.id === mode)?.monacoLang || 'plaintext'
 
@@ -209,19 +227,39 @@ export default function CollabPanel({
     const onMessage = (evt: MessageEvent) => {
       // y-websocket cuida de binário; só nos importam strings
       if (typeof evt.data !== 'string') return
-      let msg: { type?: string; sender?: string; audio?: string; until?: number }
+      let msg: { type?: string; sender?: string; audio?: string; until?: number; active?: boolean; state?: string }
       try {
         msg = JSON.parse(evt.data)
       } catch {
         return
       }
       if (msg.type === 'ptt_audio' && msg.audio) {
-        // toca áudio recebido (eco já é local — sender não recebe de volta
-        // porque o server faz fan-out só pros outros peers)
-        try {
-          const audio = new Audio(msg.audio)
-          audio.play().catch(() => { /* autoplay bloqueado — silencioso */ })
-        } catch {}
+        // v18.2: se estúdio ON AIR, decodifica o chunk remoto e conecta no
+        // mixerBus pra sair junto na rádio com o anfitrião. Caso contrário,
+        // toca via <audio> normal (modo PTT sem estúdio).
+        const studioCtx = onAirAudioCtxRef.current
+        const mixer = onAirMixerRef.current
+        if (studioCtx && mixer && msg.audio) {
+          const audioUrl = msg.audio
+          ;(async () => {
+            try {
+              const arr = await fetch(audioUrl).then(r => r.arrayBuffer())
+              const audioBuf = await studioCtx.decodeAudioData(arr)
+              const src = studioCtx.createBufferSource()
+              src.buffer = audioBuf
+              src.connect(mixer)
+              src.start()
+              console.log('[OnAirMix] convidado mixado:', msg.sender, audioBuf.duration.toFixed(2), 's')
+            } catch (e) {
+              console.warn('[OnAirMix] decode convidado falhou:', e)
+            }
+          })()
+        } else {
+          try {
+            const audio = new Audio(msg.audio)
+            audio.play().catch(() => { /* autoplay bloqueado — silencioso */ })
+          } catch {}
+        }
         // mostra indicador "📻 [nome] falando..." por até 3s (audio pode
         // acabar antes, mas enquanto toca é sinal claro)
         const durMs = Math.min(PTT_MAX_MS, 3000)
@@ -232,8 +270,11 @@ export default function CollabPanel({
           playRogerBeep()
         } catch {}
       }
-      // ptt_state (início/fim de TX) — pode ser usado pra UI no futuro.
-      // Por enquanto o indicador já dispara no audio arriving.
+      // ptt_state (início/fim de TX) — usado pra ducking da rádio ambiente.
+      if (msg.type === 'ptt_state') {
+        const active = msg.active === true || msg.state === 'on' || msg.state === 'talking'
+        dispatchPttActive(active, 'px')
+      }
     }
 
     ws.addEventListener('message', onMessage)
@@ -487,6 +528,8 @@ export default function CollabPanel({
       }
       recorder.start()
       setPttActive(true)
+      // 07/09/2026 v15: avisa AmbientRadioPlayer pra fazer ducking (fade 0.15→0.02)
+      dispatchPttActive(true, 'px')
       // safety net: cap 15s
       if (pttTimeoutRef.current) window.clearTimeout(pttTimeoutRef.current)
       pttTimeoutRef.current = window.setTimeout(() => {
@@ -508,6 +551,174 @@ export default function CollabPanel({
       mediaRecorderRef.current?.stop()
     } catch {}
     setPttActive(false)
+    dispatchPttActive(false, 'px')
+  }
+
+  // ── Estúdio de Transmissão: handlers ON AIR ─────────────────────────────
+  // 07/09/2026 v15: moderador da sala pode transmitir o áudio da sala direto
+  // pra Devocional 12 (harbor 9035). Botão só aparece se isRoomHost.
+  // Funcionamento: abre BroadcastHandle (WS extra pra sala _broadcast),
+  // envia broadcast_state=on, captura microfone continuamente em chunks
+  // de ~2s, manda como data URL base64 pelo mesmo WS. bridge_server.py
+  // escreve no FIFO + spawna ffmpeg → icecast. Ao parar, broadcast_state=off
+  // e bridge fecha ffmpeg em ~2s, AutoDJ retoma.
+  const checkRoomHost = async () => {
+    try {
+      const r = await fetch(`${BASE_URL}ws/collab/${roomId}/status`, {
+        headers: { 'Accept': 'application/json' },
+      })
+      if (!r.ok) return false
+      const j = await r.json()
+      // Extrai meu user_id do JWT (sub ou user_id claim)
+      let myUID = ''
+      try {
+        const parts = (jwtToken || '').split('.')
+        if (parts.length === 3) {
+          const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
+          myUID = payload?.sub || payload?.user_id || ''
+        }
+      } catch {}
+      if (j?.host_user_id && myUID && j.host_user_id === myUID) return true
+      return false
+    } catch {
+      return false
+    }
+  }
+
+  useEffect(() => {
+    if (!roomId || !isAuthenticated) {
+      setIsRoomHost(false)
+      return
+    }
+    let cancelled = false
+    const check = async () => {
+      const ok = await checkRoomHost()
+      if (!cancelled) setIsRoomHost(ok)
+    }
+    check()
+    // Re-checar a cada 30s — host pode mudar se o anterior sair e outro peer assumir
+    const iv = window.setInterval(check, 30_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(iv)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId, isAuthenticated, jwtToken])
+
+  const startOnAir = async () => {
+    if (onAir || onAirStarting) return
+    if (!isRoomHost) return
+    setOnAirStarting(true)
+    try {
+      console.log('[OnAir] start: criando handle WS pra _broadcast')
+      // 1. WS pro _broadcast (sala fantasma)
+      const handle = openBroadcastHandle(jwtToken, displayName)
+      onAirHandleRef.current = handle
+      console.log('[OnAir] aguardando WS abrir (wsReady)…')
+      // 2. Espera WS estar OPEN antes de mandar setState. wsReady agora resolve
+      // via onopen nativo (sem polling/evento do provider).
+      await handle.wsReady()
+      console.log('[OnAir] WS pronto após wsReady')
+      // 3. Avisa o bridge: ON na sala <roomId>
+      console.log('[OnAir] enviando broadcast_state=on room=', roomId)
+      handle.setState('on', roomId, displayName, jwtToken)
+      // 4. Pega microfone e começa a gravar continuamente em chunks ~2s
+      console.log('[OnAir] pedindo getUserMedia (mic)…')
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      })
+      console.log('[OnAir] getUserMedia OK, tracks=', stream.getTracks().map(t => `${t.kind}:${t.label}`))
+      onAirStreamRef.current = stream
+      // v18.1: ScriptProcessorNode captura PCM direto da placa @ 16kHz mono.
+      // Sem WebM, sem MediaRecorder, sem decodeAudioData. Chunks ~256ms
+      // (4096 samples @ 16kHz). Bridge pré-acumula 6s antes de iniciar ffmpeg.
+      const audioCtx = new AudioContext({ sampleRate: 16000 })
+      onAirAudioCtxRef.current = audioCtx
+      // v18.2: mixerBus soma mic local + áudios remotos dos convidados (ptt_audio).
+      // Tudo que conecta nele é somado automaticamente (Web Audio soma no destino).
+      const mixerBus = audioCtx.createGain()
+      mixerBus.gain.value = 1
+      onAirMixerRef.current = mixerBus
+      const source = audioCtx.createMediaStreamSource(stream)
+      source.connect(mixerBus)
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1)
+      onAirProcessorRef.current = processor
+      processor.onaudioprocess = (ev) => {
+        const input = ev.inputBuffer.getChannelData(0)
+        const int16 = new Int16Array(input.length)
+        for (let i = 0; i < input.length; i++) {
+          const s = Math.max(-1, Math.min(1, input[i]))
+          int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff
+        }
+        const dataUrl = pcmToBase64DataUrl(int16.buffer)
+        console.log('[BROADCAST] PCM chunk:', int16.length, 'samples (', int16.byteLength, 'B) s16le @16kHz')
+        handle.sendAudio(dataUrl, displayName)
+      }
+      // mixerBus → processor.input → muteGain → destination (sem eco local).
+      mixerBus.connect(processor)
+      const gain = audioCtx.createGain()
+      gain.gain.value = 0
+      onAirGainRef.current = gain
+      processor.connect(gain)
+      gain.connect(audioCtx.destination)
+      // 4. UI
+      onAirStartedAtRef.current = Date.now()
+      setOnAir(true)
+      setOnAirStarting(false)
+      setOnAirSeconds(0)
+      // tick pra contador ON AIR
+      if (onAirTickRef.current) window.clearInterval(onAirTickRef.current)
+      onAirTickRef.current = window.setInterval(() => {
+        setOnAirSeconds(Math.floor((Date.now() - onAirStartedAtRef.current) / 1000))
+      }, 1000)
+      // 5. Ducking: AmbientRadioPlayer abaixa volume enquanto estúdio tá no ar
+      dispatchPttActive(true, 'studio')
+    } catch (err) {
+      console.warn('[OnAir] start falhou:', err)
+      setOnAirStarting(false)
+      // cleanup parcial se algo subiu
+      try { onAirRecorderRef.current?.stop() } catch {}
+      try { onAirProcessorRef.current?.disconnect() } catch {}
+      try { onAirMixerRef.current?.disconnect() } catch {}
+      try { onAirGainRef.current?.disconnect() } catch {}
+      try { onAirAudioCtxRef.current?.close() } catch {}
+      onAirProcessorRef.current = null
+      onAirGainRef.current = null
+      onAirAudioCtxRef.current = null
+      onAirStreamRef.current?.getTracks().forEach(t => t.stop())
+      onAirStreamRef.current = null
+      onAirHandleRef.current?.close()
+      onAirHandleRef.current = null
+    }
+  }
+
+  const stopOnAir = () => {
+    if (!onAir) return
+    try { onAirRecorderRef.current?.stop() } catch {}
+    // v18.1: cleanup AudioContext + ScriptProcessor + GainNode
+    try { onAirProcessorRef.current?.disconnect() } catch {}
+    try { onAirGainRef.current?.disconnect() } catch {}
+    try { onAirAudioCtxRef.current?.close() } catch {}
+    onAirProcessorRef.current = null
+    onAirGainRef.current = null
+    onAirAudioCtxRef.current = null
+    onAirStreamRef.current?.getTracks().forEach(t => t.stop())
+    onAirStreamRef.current = null
+    onAirRecorderRef.current = null
+    try {
+      onAirHandleRef.current?.setState('off', roomId, displayName, jwtToken)
+    } catch {}
+    setTimeout(() => {
+      onAirHandleRef.current?.close()
+      onAirHandleRef.current = null
+    }, 1500)  // dá tempo do bridge processar o "off"
+    if (onAirTickRef.current) {
+      window.clearInterval(onAirTickRef.current)
+      onAirTickRef.current = null
+    }
+    setOnAir(false)
+    setOnAirSeconds(0)
+    dispatchPttActive(false, 'studio')
   }
 
   // cleanup do microfone se o componente desmontar mid-recording
@@ -516,8 +727,50 @@ export default function CollabPanel({
       if (pttTimeoutRef.current) window.clearTimeout(pttTimeoutRef.current)
       pttStreamRef.current?.getTracks().forEach(t => t.stop())
       try { mediaRecorderRef.current?.stop() } catch {}
+      // 07/09/2026 v15: cleanup do estúdio se painel fechar mid-broadcast
+      if (onAirTickRef.current) window.clearInterval(onAirTickRef.current)
+      try { onAirRecorderRef.current?.stop() } catch {}
+      // v18.1: cleanup AudioContext
+      try { onAirProcessorRef.current?.disconnect() } catch {}
+      try { onAirMixerRef.current?.disconnect() } catch {}
+      try { onAirGainRef.current?.disconnect() } catch {}
+      try { onAirAudioCtxRef.current?.close() } catch {}
+      onAirStreamRef.current?.getTracks().forEach(t => t.stop())
+      try { onAirHandleRef.current?.close() } catch {}
+      dispatchPttActive(false, 'studio')
     }
   }, [])
+
+  // 07/09/2026 v15 — Awareness: publica "broadcasting" quando ON AIR, e
+  // escuta peers pra mostrar badge global "NO AR NA WEB RÁDIO" pra todos.
+  useEffect(() => {
+    const provider = providerRef.current
+    if (!provider) return
+    if (onAir) {
+      try { provider.awareness.setLocalStateField('broadcasting', { room_id: roomId, since: onAirStartedAtRef.current }) } catch {}
+    } else {
+      try { provider.awareness.setLocalStateField('broadcasting', null) } catch {}
+    }
+  }, [onAir, roomId])
+
+  const [peerBroadcasting, setPeerBroadcasting] = useState<{ name: string; since: number } | null>(null)
+  useEffect(() => {
+    const provider = providerRef.current
+    if (!provider) return
+    const onAwareness = () => {
+      const states = Array.from(provider.awareness.getStates().values()) as any[]
+      const me = provider.awareness.clientID
+      const broadcaster = states.find((s) => s?.user && s?.broadcasting && s?.user?.client_id !== me)
+      if (broadcaster) {
+        setPeerBroadcasting({ name: broadcaster.user?.display_name || 'Anfitrião', since: broadcaster.broadcasting.since || Date.now() })
+      } else {
+        setPeerBroadcasting(null)
+      }
+    }
+    provider.awareness.on('change', onAwareness)
+    onAwareness()
+    return () => provider.awareness.off('change', onAwareness)
+  }, [status])
 
   // ── Convidar (gera URL ?room= e copia pro clipboard) ─────────────────
   // 04/09/2026: bug crítico no mobile — a versão antiga montava
@@ -713,6 +966,52 @@ export default function CollabPanel({
             <Radio size={14} />
             {pttActive ? 'Transmitindo…' : 'PX'}
           </button>
+          {/* 07/09/2026 v15 — Botão Estúdio de Transmissão: injeta o áudio
+              da sala direto na Devocional 12 (harbor 9035). Visível SÓ pro
+              anfitrião (isRoomHost). Toggle ON/OFF. Quando ON: badge
+              pulsante + contador mm:ss. Estado off: ícone Megaphone discreto. */}
+          {isAuthenticated && (
+            <button
+              onClick={onAir ? stopOnAir : startOnAir}
+              disabled={onAirStarting || !isRoomHost}
+              title={
+                !isRoomHost ? 'Só o anfitrião da sala pode transmitir' :
+                onAir ? 'Clique pra encerrar a transmissão (Icecast volta pro AutoDJ em ~2s)' :
+                'Injetar áudio da sala na Devocional 12 — Devocional 12'
+              }
+              aria-label={onAir ? 'Encerrar transmissão ao vivo' : 'Transmitir sala ao vivo na Web Rádio Devocional 12'}
+              style={{
+                background: onAir ? '#dc2626' : (!isRoomHost ? 'transparent' : 'transparent'),
+                border: onAir ? '1px solid #ef4444' : '1px solid #E8A547',
+                color: onAir ? '#fff' : (!isRoomHost ? '#666' : '#E8A547'),
+                padding: '6px 10px',
+                borderRadius: 8,
+                cursor: onAirStarting ? 'wait' : (isRoomHost ? 'pointer' : 'not-allowed'),
+                fontSize: 13,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                transition: 'background 0.15s, border-color 0.15s',
+                animation: onAir ? 'ptt-pulse 0.8s ease-in-out infinite' : 'none',
+                opacity: (!isRoomHost && !onAir) ? 0.5 : 1,
+              }}
+              onMouseEnter={(e) => {
+                if (onAir || onAirStarting) return
+                if (isRoomHost) e.currentTarget.style.background = '#1F2B3D'
+              }}
+              onMouseLeave={(e) => {
+                if (onAir || onAirStarting) return
+                e.currentTarget.style.background = 'transparent'
+              }}
+            >
+              <Megaphone size={14} />
+              {onAir
+                ? `NO AR · ${Math.floor(onAirSeconds / 60).toString().padStart(2, '0')}:${(onAirSeconds % 60).toString().padStart(2, '0')}`
+                : onAirStarting
+                ? 'conectando…'
+                : 'Transmitir'}
+            </button>
+          )}
           <button
             onClick={onClose}
             title="Fechar painel"
@@ -746,6 +1045,24 @@ export default function CollabPanel({
         >
           ✏️ Modo convidado: você pode digitar à vontade, mas suas edições ficam só
           no seu navegador. Faça login no Leitor pra sincronizar com o anfitrião em tempo real.
+        </div>
+      )}
+
+      {/* 07/09/2026 v15 — Badge global: aparece pra todos (exceto o próprio
+          host que está transmitindo) quando o anfitrião ligou o estúdio.
+          Awareness propaga via Yjs. */}
+      {peerBroadcasting && !onAir && (
+        <div
+          className="px-3 py-2 bg-red-600/30 text-red-100 text-xs border-b border-red-500/50 flex items-center gap-2"
+          role="status"
+          aria-live="polite"
+          style={{ animation: 'ptt-pulse 1.6s ease-in-out infinite' }}
+        >
+          <Megaphone size={14} />
+          <span>
+            🔴 <strong>NO AR NA WEB RÁDIO</strong> — {peerBroadcasting.name} está transmitindo esta sala ao vivo na{' '}
+            <strong>Devocional 12</strong>
+          </span>
         </div>
       )}
 

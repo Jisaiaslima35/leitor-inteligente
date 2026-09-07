@@ -23,6 +23,7 @@ import { UploadPage } from './pages/UploadPage'
 import { BuyPage } from './pages/BuyPage'
 import { DevPage } from './pages/DevPage'
 import { CheckoutModal } from './components/CheckoutModal'
+import { AmbientRadioPlayer } from './components/AmbientRadioPlayer'
 import { AuthProvider, useAuth } from './lib/AuthContext'
 import { supabase, SUPABASE_READY } from './lib/supabase'
 import { isAdminEmail, isAdminUser } from './lib/admin'
@@ -321,6 +322,10 @@ function InnerApp() {
         isAuthenticated={isAuthenticated}
         onSignOut={handleSignOut}
       />
+      {/* 07/09/2026 v15: player ambiente da Web Rádio Devocional 12 no header
+          direito — toca em qualquer rota do Leitor com volume baixo + ducking
+          automático quando alguém fala no Rádio PX. */}
+      <AmbientRadioPlayer />
       <main className="page">
         {showSyncLoading && (
           <div className="sync-loading">

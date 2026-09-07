@@ -215,10 +215,10 @@ async def _pump_binary(ws, room_id: str):
                     continue
                 # Whitelist de tipos aceitos. Outros = silencioso.
                 msg_type = parsed.get("type")
-                if msg_type not in ("ptt_audio", "ptt_state"):
+                if msg_type not in ("ptt_audio", "ptt_state", "broadcast_audio", "broadcast_state"):
                     continue
                 payload = raw  # repassa o JSON cru como string
-                log.debug(f"pump: fan-out PTT type={msg_type} room={room_id[:8]} bytes={len(raw)}")
+                log.info(f"pump: fan-out type={msg_type} room={room_id[:8]} bytes={len(raw)} peers={len(target.peers)}")
             else:
                 continue
             for other in list(target.peers.values()):
@@ -226,8 +226,9 @@ async def _pump_binary(ws, room_id: str):
                     continue
                 try:
                     await other.ws.send(payload)
+                    log.info(f"fan-out sent → user={other.user_id[:8]} name={other.display_name!r}")
                 except Exception as e:
-                    log.debug(f"fan-out falhou: {e}")
+                    log.warning(f"fan-out falhou user={other.user_id[:8]}: {e}")
     except ConnectionClosed:
         pass
     except Exception as e:
