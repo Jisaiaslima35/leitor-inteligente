@@ -41,6 +41,15 @@ import time
 from typing import Dict, Optional
 
 import websockets
+import sys as _sys
+_sys.path.insert(0, "/root/projetos/leitor-inteligente/api")
+from _auth import is_admin_email_jwt  # type: ignore  # noqa: E402
+
+# 08/09/2026 — Trava admin: bridge só aceita tokens cujo email está em
+# ADMIN_EMAILS (env ADMIN_EMAIL, vírgula-separado). Defesa em profundidade
+# no caso de alguém furar o gate do collab_server.py. NÃO encerra o processo
+# — só descarta a msg com log.warn pra não atrapalhar outros broadcasts.
+ADMIN_EMAILS = [e.strip().lower() for e in os.environ.get('ADMIN_EMAIL', '').split(',') if e.strip()]
 
 # ─── Logging ─────────────────────────────────────────────────────────────
 LOG_PATH = os.environ.get("BRIDGE_LOG", "/var/log/leitor-bridge.log")
@@ -298,6 +307,17 @@ async def connect_to_collab(room_id: str):
                     except Exception:
                         continue
                     mtype = msg.get("type")
+                    # 08/09/2026 — Trava admin: só processa broadcast_* se o
+                    # token na mensagem pertence a admin. Sem token / token
+                    # inválido → descarta silenciosamente (log.warn).
+                    if mtype in ("broadcast_audio", "broadcast_state"):
+                        msg_token = (msg.get("token") or "").strip()
+                        if not msg_token or not is_admin_email_jwt(msg_token, ADMIN_EMAILS):
+                            log.warning(
+                                f"bridge: msg {mtype} bloqueada (token ausente ou não-admin) "
+                                f"sender={msg.get('sender', '?')!r} room={room_id[:8]}"
+                            )
+                            continue
                     if mtype == "broadcast_audio":
                         br = BRIDGES.get(room_id)
                         if br is None:

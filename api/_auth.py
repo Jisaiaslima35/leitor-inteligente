@@ -31,6 +31,29 @@ def extract_user_id_from_jwt(token: str) -> str | None:
     return sub if sub else None
 
 
+def extract_email_from_jwt(token: str) -> str | None:
+    """Decodifica payload do JWT Supabase e retorna o `email` (lowercase).
+    Retorna None se o token for inválido/expirado ou se não tiver email."""
+    payload = decode_jwt_payload(token)
+    if not payload:
+        return None
+    email = (payload.get('email') or '').strip().lower()
+    return email or None
+
+
+def is_admin_email_jwt(token: str, admin_emails: Optional[list] = None) -> bool:
+    """Checagem rápida de admin só pelo email do JWT (sem consulta Supabase).
+    Usado em hot-path (ex.: bridge_server filtrando chunks de áudio) onde
+    não vale round-trip ao Supabase por mensagem."""
+    if admin_emails is None:
+        env = os.environ.get('ADMIN_EMAIL', '').strip()
+        admin_emails = [e.strip().lower() for e in env.split(',') if e.strip()]
+    if not admin_emails:
+        return False
+    email = extract_email_from_jwt(token)
+    return bool(email) and email in admin_emails
+
+
 def decode_jwt_payload(token: str) -> Optional[Dict[str, Any]]:
     """Decodifica o payload do JWT Supabase sem validar assinatura.
     Retorna o dict do payload ou None se inválido/expirado."""

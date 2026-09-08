@@ -67,7 +67,17 @@ MAX_PEERS_PER_ROOM = 8   # limite peer por sala
 PATH_PREFIX = "/collab/"  # server espera /collab/<roomId>
 
 sys.path.insert(0, "/root/projetos/leitor-inteligente/api")
-from _auth import extract_user_id_from_jwt  # noqa: E402
+from _auth import extract_user_id_from_jwt, extract_email_from_jwt  # noqa: E402
+
+# 08/09/2026 — Trava admin (Rádio PX Estúdio): a sala global `_broadcast`
+# é canal one-way de áudio pra Web Rádio Devocional 12. Só admin (email em
+# ADMIN_EMAILS env) pode abrir WS nela. Convidado / outro user → 4403
+# antes de virar peer. Demais salas continuam abertas pra qualquer peer.
+# O serviço `bridge_server.py` conecta como `service-bridge` (sem JWT,
+# trusted server-side) pra que o gate não bloqueie a injeção interna.
+BROADCAST_ROOM_ID = "_broadcast"
+ADMIN_EMAILS: list[str] = [e.strip().lower() for e in os.environ.get("ADMIN_EMAIL", "").split(",") if e.strip()]
+SERVICE_BRIDGE_USER_ID = "service-bridge"  # user_id sintético do bridge (server-side)
 
 
 # ─── Estado ──────────────────────────────────────────────────────────────
@@ -326,9 +336,19 @@ async def handle_connection(ws):
     # o room_id compartilhado já é a credencial (quem tem o link entra).
     # guest recebe user_id sintético "guest-<ip>-<ts>", NÃO pode virar host,
     # e a sala continua protegida de venda pelo gate de viva do signed_url_server.
+    # 08/09/2026: display_name=Studio-Bridge é o serviço bridge interno
+    # (`api/bridge_server.py`) — aceito como `service-bridge` em qualquer
+    # sala (bypassa o gate admin, server-side trusted).
     token = query.get("token", "").strip()
-    is_guest = False
-    user_id = extract_user_id_from_jwt(token)
+    raw_display_name = (query.get("display_name") or "").strip()
+    is_bridge_service = raw_display_name == "Studio-Bridge"
+
+    # Bridge é server-side trusted e NÃO vira host de nenhuma sala.
+    is_guest = is_bridge_service  # True pro bridge (sem JWT, trusted)
+    if is_bridge_service:
+        user_id = SERVICE_BRIDGE_USER_ID
+    else:
+        user_id = extract_user_id_from_jwt(token)
     if not user_id:
         if not token:
             # Sem token → aceitar como guest do Estudo em Dupla
@@ -355,6 +375,27 @@ async def handle_connection(ws):
             pass
         log.warning(f"429 ip={ip} room={room_id[:8]}")
         return
+
+    # 08/09/2026 — Trava admin da sala _broadcast (canal da Web Rádio).
+    # Quem não é admin (email não está em ADMIN_EMAILS env) recebe 4403
+    # e NÃO vira peer. Salas de Estudo em Dupla (room_id != _broadcast)
+    # seguem abertas pra qualquer um, igual antes. O serviço `bridge_server`
+    # (`service-bridge`) entra direto — é o sink dos chunks.
+    if room_id == BROADCAST_ROOM_ID:
+        if is_bridge_service:
+            log.info(f"broadcast: serviço bridge aceito em _broadcast ip={ip}")
+        else:
+            email = extract_email_from_jwt(token)
+            if not email or email not in ADMIN_EMAILS:
+                try:
+                    await ws.close(code=4403, reason="apenas admin pode transmitir na rádio")
+                except Exception:
+                    pass
+                log.warning(
+                    f"403-broadcast ip={ip} user={user_id[:8]} email={email!r} "
+                    f"— não-admin tentou abrir WS em _broadcast"
+                )
+                return
 
     # Teto de salas
     if room_id not in ROOMS and len(ROOMS) >= MAX_ROOMS:

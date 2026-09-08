@@ -24,6 +24,7 @@ import { fetchJson } from '../lib/fetchJson'
 import { BASE_URL } from '../lib/baseUrl'
 import { openBroadcastHandle, dispatchPttActive, type BroadcastHandle } from '../lib/broadcast'
 import { pcmToBase64DataUrl } from '../lib/audioPcm'
+import { jwtEmail, jwtIsAdmin, ADMIN_EMAILS } from '../lib/jwt'
 
 interface CollabPanelProps {
   roomId: string
@@ -113,6 +114,12 @@ export default function CollabPanel({
   const onAirGainRef = useRef<GainNode | null>(null)
   // v18.2: mixerBus soma mic local + áudios remotos (ptt_audio dos convidados)
   const onAirMixerRef = useRef<GainNode | null>(null)
+
+  // 08/09/2026 v19 — Trava admin: email decodificado do JWT. Só quem tá em
+  // ADMIN_EMAILS pode abrir o botão Transmitir no Estúdio. PTT walkie-talkie
+  // (Rádio PX) continua liberado pra todo mundo (inclusive convidados).
+  const myEmail = jwtEmail(jwtToken)
+  const isBroadcastAdmin = !!myEmail && jwtIsAdmin(jwtToken)
 
   const monacoLang = MODES.find((m) => m.id === mode)?.monacoLang || 'plaintext'
 
@@ -608,6 +615,17 @@ export default function CollabPanel({
   const startOnAir = async () => {
     if (onAir || onAirStarting) return
     if (!isRoomHost) return
+    // 08/09/2026 v19 — Trava admin: só transmite quem tiver email em ADMIN_EMAILS.
+    // Defesa em profundidade (front + collab_server + bridge).
+    if (!isBroadcastAdmin) {
+      console.warn(
+        '[OnAir] start BLOQUEADO: token não-admin. email=',
+        myEmail,
+        'admin_list=',
+        ADMIN_EMAILS
+      )
+      return
+    }
     setOnAirStarting(true)
     try {
       console.log('[OnAir] start: criando handle WS pra _broadcast')
@@ -968,16 +986,22 @@ export default function CollabPanel({
           </button>
           {/* 07/09/2026 v15 — Botão Estúdio de Transmissão: injeta o áudio
               da sala direto na Devocional 12 (harbor 9035). Visível SÓ pro
-              anfitrião (isRoomHost). Toggle ON/OFF. Quando ON: badge
-              pulsante + contador mm:ss. Estado off: ícone Megaphone discreto. */}
-          {isAuthenticated && (
+              anfitrião (isRoomHost) E pra admin (isBroadcastAdmin).
+              08/09/2026 v19 trava: a sala `_broadcast` (que injeta no Harbor)
+              é restrita por email no JWT. Convidados não vêm nem o botão.
+              PTT (Rádio PX) permanece liberado. */}
+          {isAuthenticated && isBroadcastAdmin && (
             <button
               onClick={onAir ? stopOnAir : startOnAir}
               disabled={onAirStarting || !isRoomHost}
               title={
-                !isRoomHost ? 'Só o anfitrião da sala pode transmitir' :
-                onAir ? 'Clique pra encerrar a transmissão (Icecast volta pro AutoDJ em ~2s)' :
-                'Injetar áudio da sala na Devocional 12 — Devocional 12'
+                !isRoomHost
+                  ? 'Só o anfitrião da sala pode transmitir'
+                  : !isBroadcastAdmin
+                  ? 'Só o admin (você não tem permissão) pode transmitir'
+                  : onAir
+                  ? 'Clique pra encerrar a transmissão (Icecast volta pro AutoDJ em ~2s)'
+                  : 'Injetar áudio da sala na Devocional 12 — Devocional 12'
               }
               aria-label={onAir ? 'Encerrar transmissão ao vivo' : 'Transmitir sala ao vivo na Web Rádio Devocional 12'}
               style={{

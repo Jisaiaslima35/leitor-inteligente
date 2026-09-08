@@ -11,6 +11,14 @@
 // parsear as mensagens customizadas (broadcast_audio/state) como update binário
 // e crashava com "Unexpected end of array". Não precisamos de Yjs sync nessa
 // sala — é canal one-way de áudio.
+//
+// 08/09/2026 (v19) — Trava admin: CollabPanel só permite broadcast pra quem
+// tem email em ADMIN_EMAILS (lib/jwt.ts). Defesa em profundidade:
+// collab_server.py:2006 fecha a sala _broadcast com 4403 se não-admin tentar
+// abrir WS. Aqui a gente já evita mandar se o token não for admin, pra não
+// gerar ruído no log.
+
+import { jwtIsAdmin } from './jwt'
 
 const BROADCAST_ROOM = '_broadcast'
 
@@ -32,6 +40,24 @@ export interface BroadcastHandle {
 
 /** Abre conexão WS crua pra sala _broadcast. Sem Yjs, sem provider. */
 export function openBroadcastHandle(jwtToken: string, displayName: string): BroadcastHandle {
+  // 08/09/2026 v19: trava admin. Sem JWT válido OU não-admin → não abre.
+  // Evita ruído no log do servidor e dispensa o guard do collab_server.
+  const admin = jwtIsAdmin(jwtToken)
+  if (!admin) {
+    console.warn(
+      '[broadcast] openBroadcastHandle BLOQUEADO: token não é admin. ' +
+        'Transmissão restrita.'
+    )
+    // Retorna um handle "fantasma" — todas as funções são no-op logando warning.
+    return {
+      setState: () =>
+        console.warn('[broadcast] setState SKIP (não-admin)'),
+      sendAudio: () =>
+        console.warn('[broadcast] sendAudio SKIP (não-admin)'),
+      close: () => {},
+      wsReady: () => Promise.resolve(),
+    }
+  }
   const url = `${WS_BASE}/${BROADCAST_ROOM}?token=${encodeURIComponent(jwtToken || '')}&display_name=${encodeURIComponent(displayName || 'Transmissor')}`
   console.log('[broadcast] openBroadcastHandle: conectando em', url)
   const ws = new WebSocket(url)
