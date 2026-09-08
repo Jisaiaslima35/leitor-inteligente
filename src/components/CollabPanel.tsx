@@ -24,7 +24,12 @@ import { fetchJson } from '../lib/fetchJson'
 import { BASE_URL } from '../lib/baseUrl'
 import { openBroadcastHandle, dispatchPttActive, type BroadcastHandle } from '../lib/broadcast'
 import { pcmToBase64DataUrl } from '../lib/audioPcm'
-import { jwtEmail, jwtIsAdmin, ADMIN_EMAILS } from '../lib/jwt'
+import { supabase } from '../lib/supabase'
+
+// 08/09/2026 v19.1 — Admin email fixo em hard-code (mesmo do backend
+// ADMIN_EMAIL env). Isaías pediu pra checar via supabase.auth.getUser()
+// em vez de parser JWT no front (mais seguro + sem parse custoso).
+const ADMIN_EMAIL = 'brisacamera34@gmail.com'
 
 interface CollabPanelProps {
   roomId: string
@@ -115,11 +120,36 @@ export default function CollabPanel({
   // v18.2: mixerBus soma mic local + áudios remotos (ptt_audio dos convidados)
   const onAirMixerRef = useRef<GainNode | null>(null)
 
-  // 08/09/2026 v19 — Trava admin: email decodificado do JWT. Só quem tá em
-  // ADMIN_EMAILS pode abrir o botão Transmitir no Estúdio. PTT walkie-talkie
-  // (Rádio PX) continua liberado pra todo mundo (inclusive convidados).
-  const myEmail = jwtEmail(jwtToken)
-  const isBroadcastAdmin = !!myEmail && jwtIsAdmin(jwtToken)
+  // 08/09/2026 v19.1 — Trava admin via supabase.auth.getUser() ASYNC.
+  // Isaías: parser JWT no front (atob) pode falhar/travar e quebrar render.
+  // Default false, dispara useEffect separado que resolve em background
+  // e atualiza o state. NÃO segura o mount do componente.
+  const [isBroadcastAdmin, setIsBroadcastAdmin] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!isAuthenticated) {
+      setIsBroadcastAdmin(false)
+      return
+    }
+    ;(async () => {
+      try {
+        const { data, error } = await supabase.auth.getUser()
+        if (cancelled) return
+        if (error || !data?.user) {
+          setIsBroadcastAdmin(false)
+          return
+        }
+        const email = (data.user.email || '').toLowerCase()
+        setIsBroadcastAdmin(email === ADMIN_EMAIL)
+      } catch {
+        if (!cancelled) setIsBroadcastAdmin(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [isAuthenticated, jwtToken])
 
   const monacoLang = MODES.find((m) => m.id === mode)?.monacoLang || 'plaintext'
 
@@ -615,15 +645,10 @@ export default function CollabPanel({
   const startOnAir = async () => {
     if (onAir || onAirStarting) return
     if (!isRoomHost) return
-    // 08/09/2026 v19 — Trava admin: só transmite quem tiver email em ADMIN_EMAILS.
+    // 08/09/2026 v19 — Trava admin: só transmite quem tiver email admin.
     // Defesa em profundidade (front + collab_server + bridge).
     if (!isBroadcastAdmin) {
-      console.warn(
-        '[OnAir] start BLOQUEADO: token não-admin. email=',
-        myEmail,
-        'admin_list=',
-        ADMIN_EMAILS
-      )
+      console.warn('[OnAir] start BLOQUEADO: sessão não-admin')
       return
     }
     setOnAirStarting(true)
