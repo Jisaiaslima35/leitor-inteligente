@@ -23,6 +23,9 @@ import { Users, Radio, Megaphone, X as XIcon } from 'lucide-react'
 import { fetchJson } from '../lib/fetchJson'
 import { BASE_URL } from '../lib/baseUrl'
 import { openBroadcastHandle, dispatchPttActive, type BroadcastHandle } from '../lib/broadcast'
+// v19.2: import do checkBroadcastAdmin não é necessário aqui — CollabPanel já
+// tem isBroadcastAdmin resolvido via useEffect + supabase.auth.getUser() na
+// linha 137. Só precisamos passar o state pra openBroadcastHandle().
 import { pcmToBase64DataUrl } from '../lib/audioPcm'
 import { supabase } from '../lib/supabase'
 
@@ -655,7 +658,10 @@ export default function CollabPanel({
     try {
       console.log('[OnAir] start: criando handle WS pra _broadcast')
       // 1. WS pro _broadcast (sala fantasma)
-      const handle = openBroadcastHandle(jwtToken, displayName)
+      // v19.2: passa isBroadcastAdmin (já resolvido via supabase.auth.getUser)
+      // em vez de deixar broadcast.ts decodificar o JWT cru (que às vezes
+      // não tem campo email e bloqueava admin indevidamente).
+      const handle = openBroadcastHandle(jwtToken, displayName, isBroadcastAdmin)
       onAirHandleRef.current = handle
       console.log('[OnAir] aguardando WS abrir (wsReady)…')
       // 2. Espera WS estar OPEN antes de mandar setState. wsReady agora resolve

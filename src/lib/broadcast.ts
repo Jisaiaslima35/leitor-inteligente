@@ -17,15 +17,48 @@
 // collab_server.py:2006 fecha a sala _broadcast com 4403 se não-admin tentar
 // abrir WS. Aqui a gente já evita mandar se o token não for admin, pra não
 // gerar ruído no log.
+//
+// 08/09/2026 (v19.2) — Isaías reportou que decodeJwtPayload às vezes retorna
+// payload sem campo `email` (Supabase põe em user_metadata dependendo do
+// provider/refresh), fazendo jwtIsAdmin dar false mesmo pra admin real.
+// FIX: NÃO confiar mais no JWT cru. Aceitar `isAdmin` boolean já resolvido
+// pelo CollabPanel via `supabase.auth.getUser()` (que consulta o servidor,
+// não parseia string). Manter jwtIsAdmin só como fallback síncrono pra
+// compatibilidade, mas o caminho oficial agora é `checkBroadcastAdmin()`.
 
 import { jwtIsAdmin } from './jwt'
+import { supabase } from './supabase'
 
 const BROADCAST_ROOM = '_broadcast'
+
+const ADMIN_EMAIL = 'brisacamera34@gmail.com'
 
 const isDev = typeof window !== 'undefined' && window.location.port === '5173'
 const WS_BASE = isDev
   ? 'ws://127.0.0.1:2006/collab'
   : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/collab`
+
+/** Fonte da verdade: pergunta ao Supabase quem tá logado e compara email.
+ *  Async. Use no mount/effect — não segura render. */
+export async function checkBroadcastAdmin(): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.auth.getUser()
+    if (error || !data?.user) {
+      console.warn('[broadcast] checkBroadcastAdmin: getUser falhou:', error?.message || 'sem user')
+      return false
+    }
+    const email = (data.user.email || '').trim().toLowerCase()
+    const meta = data.user.user_metadata || {}
+    const metaEmail = (meta.email || '').toString().trim().toLowerCase()
+    console.log('[broadcast] checkBroadcastAdmin: email auth=', JSON.stringify(email), 'metadata.email=', JSON.stringify(metaEmail))
+    const admin = email === ADMIN_EMAIL || metaEmail === ADMIN_EMAIL
+    console.log('[broadcast] checkBroadcastAdmin: isAdmin =', admin)
+    return admin
+  } catch (e) {
+    console.warn('[broadcast] checkBroadcastAdmin: erro:', e)
+    return false
+  }
+}
 
 export interface BroadcastHandle {
   /** Envia evento broadcast_state (on/off) com identificação da sala real. */
@@ -38,14 +71,25 @@ export interface BroadcastHandle {
   wsReady: () => Promise<void>
 }
 
-/** Abre conexão WS crua pra sala _broadcast. Sem Yjs, sem provider. */
-export function openBroadcastHandle(jwtToken: string, displayName: string): BroadcastHandle {
-  // 08/09/2026 v19: trava admin. Sem JWT válido OU não-admin → não abre.
-  // Evita ruído no log do servidor e dispensa o guard do collab_server.
-  const admin = jwtIsAdmin(jwtToken)
+/** Abre conexão WS crua pra sala _broadcast. Sem Yjs, sem provider.
+ *
+ *  v19.2: aceita `isAdmin` boolean já validado por checkBroadcastAdmin()
+ *  (supabase.auth.getUser). Se omitido, cai no fallback jwtIsAdmin(jwtToken)
+ *  que pode falhar se o JWT não trouxer o campo email no payload (caso real
+ *  reportado por Isaías 08/09 20:37 — bloqueava admin indevidamente).
+ */
+export function openBroadcastHandle(
+  jwtToken: string,
+  displayName: string,
+  isAdmin?: boolean
+): BroadcastHandle {
+  // 08/09/2026 v19.2: trava admin via param `isAdmin` (fonte: supabase.auth.getUser).
+  // Fallback síncrono via decodeJwtPayload se não vier (compat com versões antigas).
+  const admin = typeof isAdmin === 'boolean' ? isAdmin : jwtIsAdmin(jwtToken)
+  console.log('[broadcast] openBroadcastHandle: admin=', admin, '(via', typeof isAdmin === 'boolean' ? 'supabase.auth.getUser()' : 'fallback jwtIsAdmin', ')')
   if (!admin) {
     console.warn(
-      '[broadcast] openBroadcastHandle BLOQUEADO: token não é admin. ' +
+      '[broadcast] openBroadcastHandle BLOQUEADO: sessão não-admin. ' +
         'Transmissão restrita.'
     )
     // Retorna um handle "fantasma" — todas as funções são no-op logando warning.
@@ -105,10 +149,15 @@ export function openBroadcastHandle(jwtToken: string, displayName: string): Broa
         return
       }
       try {
+        // 08/09 v19.3: bridge_server.py valida `msg.token` no payload pra
+        // confirmar admin (defesa em profundidade). Sem ele, o chunk é
+        // descartado silenciosamente (log "msg broadcast_audio bloqueada
+        // (token ausente)"). Capturamos jwtToken do closure de openBroadcastHandle.
         ws.send(JSON.stringify({
           type: 'broadcast_audio',
           audio: dataUrl,
           sender,
+          token: jwtToken,
           timestamp: Date.now(),
         }))
         console.log('[BROADCAST] Enviando chunk de áudio:', dataUrl.length, 'bytes (b64)')

@@ -86,11 +86,23 @@ export function XtermTerminal({
     // o stdin do Piston) só desbloqueia com \n. Sem essa conversão o
     // Python fica travado esperando newline que nunca chega e a sessão
     // expira sem dar output. Isaías 05/09/2026.
+    //
+    // v18.3 (07/09/2026): também escreve echo local (`term.write`) com
+    // \n → \r\n pra quebrar visualmente a linha. Sem isso, o output do
+    // Piston (próximo print/input) ficava grudado no cursor após o
+    // prompt anterior, virando "Qual seu nome? joseQuantos anos? 38".
     term.onData((data) => {
       if (!sessionRef.current) return
       // \r sozinho → \n (Enter do TTY). \r\n → \n (CRLF).
       const normalized = data.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+      console.log('[Xterm] onData:', JSON.stringify(data), '→ normalized:', JSON.stringify(normalized))
       sessionRef.current.sendStdin(normalized)
+      // Echo local: xterm NÃO renderiza automaticamente quando há onData
+      // handler. Precisamos escrever de volta com \r\n pra mover cursor
+      // pra início da próxima linha e quebrar visualmente.
+      const echo = normalized.replace(/\n/g, '\r\n')
+      console.log('[Xterm] echo:', JSON.stringify(echo))
+      term.write(echo)
     })
 
     return () => {
