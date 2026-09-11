@@ -448,7 +448,7 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
   ): Promise<Highlight | null> => {
     if (!highlightsJwt) return null
     // 04/09/2026: sanitizar NUL/controles do PDF antes de enviar. Postgres
-    // rejeita   e o backend sanitiza como defesa secundária.
+    // rejeita NUL (\\x00) e o backend sanitiza como defesa secundária.
     const safeText = selectedText.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
     const res = await fetch(HIGHLIGHTS_API, {
       method: 'POST',

@@ -7,10 +7,20 @@ export function ownsBook(state: LibraryState, userId: string, bookId: string): b
 }
 
 export function checkoutBook(state: LibraryState, userId: string, bookId: string): LibraryState {
-  // NÃO adiciona o livro aqui — isso era o bug. A compra só vai pra biblioteca
-  // depois que o webhook do provider (Mercado Pago / Cakto) confirmar o pagamento.
-  // Por enquanto retorna state inalterado.
-  return state
+  if (ownsBook(state, userId, bookId)) {
+    return state
+  }
+  const newPurchase: Purchase = {
+    id: `purchase-${userId}-${bookId}`,
+    userId,
+    bookId,
+    purchasedAt: new Date().toISOString(),
+    status: 'approved',
+  }
+  return {
+    ...state,
+    purchases: [...state.purchases, newPurchase],
+  }
 }
 
 export type { LibraryState, Purchase, ProgressState } from './types'
