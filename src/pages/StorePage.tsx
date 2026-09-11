@@ -4,6 +4,8 @@ import type { Book } from '../domain/types'
 import type { LibraryState } from '../domain/library'
 import { ownsBook } from '../domain/library'
 import { loadCatalogFromSupabase, loadReaderCountsBySlug } from '../lib/catalogSupabase'
+import { CAMPANHAS } from '../data/campaigns'
+import { Megaphone, ArrowRight } from 'lucide-react'
 
 interface Props {
   onBuy: (book: Book) => void
@@ -95,6 +97,35 @@ export function StorePage({ onBuy, library, onGoLibrary }: Props) {
       <div className="section-title">
         <h2>Loja</h2>
         <small>Catálogo comercial • pagamento demonstrativo</small>
+      </div>
+
+      {/* 11/09/2026 (v19 — campanhas): banner compacto das 3 landpages temáticas.
+          Aparece sempre (não depende de Supabase) — leva direto pra /tema/<slug>. */}
+      <div className="campaigns-banner" aria-label="Campanhas temáticas em destaque">
+        <div className="campaigns-banner-head">
+          <Megaphone size={16} />
+          <span>Campanhas temáticas</span>
+        </div>
+        <div className="campaigns-banner-grid">
+          {CAMPANHAS.map((c) => (
+            <a
+              key={c.slug}
+              className="campaigns-banner-item"
+              href={`#/tema/${encodeURIComponent(c.slug)}`}
+              role="button"
+            >
+              <span className="campaigns-banner-item-badge">
+                {c.badge.replace('COLEÇÃO ESPECIAL: ', '')}
+              </span>
+              <span className="campaigns-banner-item-desc">
+                {c.descricao.slice(0, 90)}…
+              </span>
+              <span className="campaigns-banner-item-cta">
+                Ver coleção <ArrowRight size={12} />
+              </span>
+            </a>
+          ))}
+        </div>
       </div>
 
       {pending && (

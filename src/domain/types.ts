@@ -55,14 +55,19 @@ export interface Book {
  *  escolher no radio obrigatório). 'comum' continua existindo pra não
  *  quebrar os 19 livros legados do P4. Schema Supabase:
  *  CHECK constraint cobre todos os 7 valores.
+ *  11/09/2026 (v19 — campanhas): +3 valores pra landpages temáticas
+ *  (/tema/<slug>). Migration 20260911233000 atualiza CHECK pra 10 valores.
  *
- *    comum         → livro comum (legado P4, fica como bucket genérico)
- *    programacao   → Tecnologia ou Programação (Sala Dev habilitada)
- *    tecnologia    → Tecnologia Geral (sem Área Dev por enquanto)
- *    gospel        → literatura gospel/evangélica
- *    literatura    → ficção/clássicos/poesia
- *    autoajuda     → desenvolvimento pessoal/produtividade
- *    outros        → catch-all (espécies não mapeadas)
+ *    comum                  → livro comum (legado P4, fica como bucket genérico)
+ *    programacao            → Tecnologia ou Programação (Sala Dev habilitada)
+ *    tecnologia             → Tecnologia Geral (sem Área Dev por enquanto)
+ *    gospel                 → literatura gospel/evangélica
+ *    literatura             → ficção/clássicos/poesia
+ *    autoajuda              → desenvolvimento pessoal/produtividade
+ *    outros                 → catch-all (espécies não mapeadas)
+ *    batalha-espiritual     → campanha temática (vitrine /tema/batalha-espiritual)
+ *    casamento-familia      → campanha temática (vitrine /tema/casamento-familia)
+ *    infantil               → campanha temática (vitrine /tema/infantil)
  */
 export type Categoria =
   | 'comum'
@@ -72,6 +77,9 @@ export type Categoria =
   | 'literatura'
   | 'autoajuda'
   | 'outros'
+  | 'batalha-espiritual'
+  | 'casamento-familia'
+  | 'infantil'
 
 export const CATEGORIAS: Categoria[] = [
   'comum',
@@ -81,6 +89,9 @@ export const CATEGORIAS: Categoria[] = [
   'literatura',
   'autoajuda',
   'outros',
+  'batalha-espiritual',
+  'casamento-familia',
+  'infantil',
 ]
 
 export const CATEGORIA_LABEL: Record<Categoria, string> = {
@@ -91,4 +102,14 @@ export const CATEGORIA_LABEL: Record<Categoria, string> = {
   literatura: 'Literatura / Ficção',
   autoajuda: 'Autoajuda / Crescimento',
   outros: 'Outros',
+  'batalha-espiritual': 'Batalha Espiritual',
+  'casamento-familia': 'Casamento & Família',
+  infantil: 'Infantil',
+}
+
+/** Slug de URL de cada campanha temática. Deriva direto da Categoria. */
+export const CAMPAIGN_SLUGS: Record<string, string> = {
+  'batalha-espiritual': 'batalha-espiritual',
+  'casamento-familia': 'casamento-familia',
+  infantil: 'infantil',
 }

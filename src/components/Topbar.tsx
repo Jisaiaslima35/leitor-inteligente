@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { BookOpen, Library, Sparkles, ShoppingBag, Shield, LogIn, LogOut, Flame, Upload } from 'lucide-react'
+import { BookOpen, Library, Sparkles, ShoppingBag, Shield, LogIn, LogOut, Flame, Upload, Megaphone, ChevronDown } from 'lucide-react'
 import type { Route } from '../App'
 import type { User } from '../domain/types'
 import { fetchStreak, type Streak } from '../lib/streak'
 import { isAdminEmail, isAdminUser } from '../lib/admin'
+import { CAMPANHAS } from '../data/campaigns'
 
 const TABS: { id: Route; label: string; icon: typeof BookOpen }[] = [
   { id: 'home', label: 'Início', icon: Sparkles },
@@ -23,6 +24,9 @@ interface Props {
 export function Topbar({ route, onNavigate, user, isAuthenticated, onSignOut }: Props) {
   const [streak, setStreak] = useState<Streak | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
+  // 11/09/2026 (v19 — campanhas): dropdown "Campanhas" no nav-tabs.
+  // Aberto/fechado via state, fecha ao clicar fora ou escolher uma campanha.
+  const [campaignsOpen, setCampaignsOpen] = useState(false)
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -47,16 +51,18 @@ export function Topbar({ route, onNavigate, user, isAuthenticated, onSignOut }: 
 
   // Fecha o menu ao clicar fora
   useEffect(() => {
-    if (!menuOpen) return
+    if (!menuOpen && !campaignsOpen) return
     const onDocClick = (ev: MouseEvent) => {
       const target = ev.target as HTMLElement | null
       if (!target) return
       if (target.closest('.user-menu')) return
+      if (target.closest('.campaigns-menu')) return
       setMenuOpen(false)
+      setCampaignsOpen(false)
     }
     document.addEventListener('click', onDocClick)
     return () => document.removeEventListener('click', onDocClick)
-  }, [menuOpen])
+  }, [menuOpen, campaignsOpen])
 
   const streakBadge = streak && streak.current_streak >= 1 ? (
     <span
@@ -97,6 +103,40 @@ export function Topbar({ route, onNavigate, user, isAuthenticated, onSignOut }: 
             </button>
           )
         })}
+        {/* 11/09/2026 (v19 — campanhas): dropdown "Campanhas" — agrupa as
+            landpages temáticas. Aponta pra rota 'campaign' no hash router. */}
+        <div className={`campaigns-menu ${campaignsOpen ? 'is-open' : ''}`}>
+          <button
+            type="button"
+            className={`nav-tab ${route === 'campaign' ? 'is-active' : ''}`}
+            onClick={() => setCampaignsOpen((v) => !v)}
+            aria-haspopup="menu"
+            aria-expanded={campaignsOpen}
+          >
+            <Megaphone size={16} />
+            <span className="label">Campanhas</span>
+            <ChevronDown size={12} className={`campaigns-caret ${campaignsOpen ? 'is-open' : ''}`} />
+          </button>
+          {campaignsOpen && (
+            <div className="campaigns-menu-panel" role="menu">
+              {CAMPANHAS.map((c) => (
+                <button
+                  key={c.slug}
+                  type="button"
+                  className="campaigns-menu-item"
+                  role="menuitem"
+                  onClick={() => {
+                    setCampaignsOpen(false)
+                    window.location.hash = `#/tema/${encodeURIComponent(c.slug)}`
+                  }}
+                >
+                  <span className="campaigns-menu-item-title">{c.badge.replace('COLEÇÃO ESPECIAL: ', '')}</span>
+                  <span className="campaigns-menu-item-desc">{c.descricao.slice(0, 70)}…</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </nav>
       <div className="user-area">
         {isAuthenticated ? (

@@ -29,6 +29,10 @@ export function UploadPage({ onBack, onSuccess }: Props) {
   const [etaMinutes, setEtaMinutes] = useState<number>(2)
   // P8: categoria obrigatória — radio group inicia vazio, user precisa escolher.
   const [categoria, setCategoria] = useState<CategoriaValue>('')
+  // 11/09/2026 (v19 — campanhas): descrição opcional do livro — usada no card da
+  // landpage temática (/tema/<slug>). Backend já aceita o campo (campo `description`
+  // na tabela ebooks, gravado pelo /process do upload-api).
+  const [description, setDescription] = useState('')
 
   // === Controle de acesso (pagamento de upload_fee) ===
   const [access, setAccess] = useState<AccessStatus>('loading')
@@ -219,6 +223,7 @@ export function UploadPage({ onBack, onSuccess }: Props) {
       // 3. Dispara processamento
       const finalTitle = title.trim() || file.name.replace('.pdf', '')
       const finalAuthor = author.trim() || 'Desconhecido'
+      const finalDescription = description.trim().slice(0, 280)  // limite suave
       const procRes = await fetch(`${import.meta.env.BASE_URL}upload-api/process`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -229,6 +234,9 @@ export function UploadPage({ onBack, onSuccess }: Props) {
           total_pages: pdfPageCount || 0,
           // P8: envia categoria escolhida (já validada acima)
           categoria,
+          // 11/09/2026 (v19 — campanhas): descrição opcional, exibida nos cards
+          // da landpage temática. Se vazia, CampaignCard usa fallback.
+          description: finalDescription,
         }),
       })
       if (!procRes.ok) throw new Error(`Processamento falhou: ${await procRes.text()}`)
@@ -380,6 +388,33 @@ export function UploadPage({ onBack, onSuccess }: Props) {
                   compact
                 />
               </div>
+
+              {/* 11/09/2026 (v19 — campanhas): descrição opcional pra aparecer no
+                  card da campanha temática. Máximo 280 chars (suave). */}
+              <label className="field">
+                <span>
+                  Descrição da campanha{' '}
+                  <small style={{ color: 'var(--muted)', fontWeight: 400 }}>
+                    (opcional — aparece no card da página temática)
+                  </small>
+                </span>
+                <textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value.slice(0, 280))}
+                  placeholder="Ex: Estudo profundo sobre oração e guerra espiritual, com aplicação prática diária."
+                  rows={3}
+                  maxLength={280}
+                  style={{
+                    resize: 'vertical',
+                    fontFamily: 'inherit',
+                    fontSize: 14,
+                    lineHeight: 1.4,
+                  }}
+                />
+                <small style={{ color: 'var(--muted)', alignSelf: 'flex-end' }}>
+                  {description.length}/280
+                </small>
+              </label>
 
               {errorMsg && (
                 <div className="auth-msg auth-msg-err">

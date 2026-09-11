@@ -24,11 +24,13 @@ import { BuyPage } from './pages/BuyPage'
 import { DevPage } from './pages/DevPage'
 import { CheckoutModal } from './components/CheckoutModal'
 import { AmbientRadioPlayer } from './components/AmbientRadioPlayer'
+import { CampaignPage } from './pages/CampaignPage'
+import { getCampanhaBySlug } from './data/campaigns'
 import { AuthProvider, useAuth } from './lib/AuthContext'
 import { supabase, SUPABASE_READY } from './lib/supabase'
 import { isAdminEmail, isAdminUser } from './lib/admin'
 
-export type Route = 'home' | 'store' | 'library' | 'reader' | 'admin' | 'login' | 'upload' | 'comprar' | 'dev'
+export type Route = 'home' | 'store' | 'library' | 'reader' | 'admin' | 'login' | 'upload' | 'comprar' | 'dev' | 'campaign'
 
 const PENDING_BUY_KEY = 'leitor-ia:pending-buy'
 
@@ -57,7 +59,13 @@ function clearPendingBuy() {
 const PROTECTED: Route[] = ['library', 'reader', 'admin', 'upload']
 
 /** Lê o hash e também extrai `?src=...` (traffic source da campanha) e
- *  `?room=<uuid>` (Painel de Estudo em Dupla). */
+ *  `?room=<uuid>` (Painel de Estudo em Dupla).
+ *
+ *  Suporta 2 formatos:
+ *    - `#/<route>/<bookId>` (rotas existentes)
+ *    - `#/tema/<slug>`       (campanha — route vira 'campaign', bookId = slug)
+ *    - `#/<route>`          (rotas sem bookId)
+ */
 function readRoute(): {
   route: Route
   bookId?: string
@@ -67,9 +75,22 @@ function readRoute(): {
   if (typeof window === 'undefined') return { route: 'home' }
   const rawHash = window.location.hash.replace('#/', '')
   const [pathPart, queryPart] = rawHash.split('?')
-  const [routePart, bookPart] = pathPart.split('/')
-  const route = (routePart as Route) || 'home'
-  const bookId = bookPart ? decodeURIComponent(bookPart) : undefined
+  const segments = pathPart.split('/')
+  const firstSegment = segments[0]
+
+  // Campanha: /tema/<slug>
+  if (firstSegment === 'tema') {
+    const slug = segments[1] ? decodeURIComponent(segments[1]) : undefined
+    const params = new URLSearchParams(queryPart || '')
+    return {
+      route: 'campaign',
+      bookId: slug,
+      trafficSource: params.get('src') || undefined,
+    }
+  }
+
+  const route = (firstSegment as Route) || 'home'
+  const bookId = segments[1] ? decodeURIComponent(segments[1]) : undefined
   let trafficSource: string | undefined
   let room: string | undefined
   if (queryPart) {
@@ -165,7 +186,9 @@ function InnerApp() {
         setRouteState({ route: 'library' })
         return
       }
-      const hashValue = nextBookId ? `#/${nextRoute}/${encodeURIComponent(nextBookId)}` : `#/${nextRoute}`
+      // Campaign usa URL diferente: #/tema/<slug> (não #/campaign/<slug>)
+      const path = nextRoute === 'campaign' ? 'tema' : nextRoute
+      const hashValue = nextBookId ? `#/${path}/${encodeURIComponent(nextBookId)}` : `#/${path}`
       window.location.hash = hashValue
       setRouteState({ route: nextRoute, bookId: nextBookId })
       if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -481,6 +504,35 @@ function InnerApp() {
             onGoLibrary={() => navigate('library')}
           />
         )}
+        {route === 'campaign' && bookId && (() => {
+          // 11/09/2026 (v19 — campanhas): resolve slug → campanha + render.
+          // Slug inválido cai num fallback com link de volta pra Loja.
+          const campanha = getCampanhaBySlug(bookId)
+          if (!campanha) {
+            return (
+              <section>
+                <h2 style={{ marginTop: 0 }}>📢 Campanha não encontrada</h2>
+                <p style={{ color: 'var(--muted)' }}>
+                  Não encontramos a coleção <code>{bookId}</code>.
+                </p>
+                <button className="btn btn-primary" onClick={() => navigate('store')}>
+                  ← Ver todas as coleções na Loja
+                </button>
+              </section>
+            )
+          }
+          return (
+            <CampaignPage
+              campanha={campanha}
+              library={library}
+              isAuthenticated={isAuthenticated}
+              onOpenReader={(id) => navigate('reader', id)}
+              onOpenLogin={() => navigate('login')}
+              onOpenCheckout={(book) => handleBuyClick(book)}
+              onScrollToGrid={() => {/* semop extra além do scrollIntoView */}}
+            />
+          )
+        })()}
           </>
         )}
       </main>
