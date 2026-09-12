@@ -117,16 +117,20 @@ export function CampaignPage({
             </button>
           </div>
         </div>
-        {featured && (
-          <div className="campaign-hero-cover" aria-hidden="true">
-            <div
-              className="campaign-hero-cover-img"
-              style={{ backgroundImage: `url(${featured.cover})` }}
-            />
-            <span className="campaign-hero-cover-pages">{featured.totalPages} páginas</span>
-            <span className="campaign-hero-cover-quiz">Quiz Inteligente Disponível</span>
-          </div>
-        )}
+        {featured && (() => {
+          // 11/09/2026: mesma proteção do CampaignCard — cover undefined quebrava.
+          const coverUrl = featured.cover?.trim()
+          const coverStyle = coverUrl
+            ? { backgroundImage: `url("${coverUrl.replace(/"/g, '\\"')}")` }
+            : { backgroundImage: 'linear-gradient(135deg, var(--brand), var(--brand-deep))' }
+          return (
+            <div className="campaign-hero-cover" aria-hidden="true">
+              <div className="campaign-hero-cover-img" style={coverStyle} />
+              <span className="campaign-hero-cover-pages">{featured.totalPages ?? 0} páginas</span>
+              <span className="campaign-hero-cover-quiz">Quiz Inteligente Disponível</span>
+            </div>
+          )
+        })()}
       </section>
 
       {/* GRID */}

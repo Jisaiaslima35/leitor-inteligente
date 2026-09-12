@@ -20,6 +20,13 @@ const FALLBACK_DESC = 'Clique em "Começar a Estudar" pra abrir este livro na su
 
 export function CampaignCard({ book, onSelect }: Props) {
   const desc = book.description?.trim() || FALLBACK_DESC
+  // 11/09/2026: cover undefined ou vazio causava "Render error: Fu" porque
+  // `url()` vazio quebra o React (invalid CSS value). Fallback: gradiente verde.
+  const coverUrl = book.cover?.trim()
+  const coverStyle = coverUrl
+    ? { backgroundImage: `url("${coverUrl.replace(/"/g, '\\"')}")` }
+    : { backgroundImage: 'linear-gradient(135deg, var(--brand), var(--brand-deep))' }
+  const pages = book.totalPages ?? 0
 
   return (
     <article className="campaign-card" onClick={onSelect} role="button" tabIndex={0}
@@ -27,11 +34,11 @@ export function CampaignCard({ book, onSelect }: Props) {
     >
       <div
         className="campaign-card-cover"
-        style={{ backgroundImage: `url(${book.cover})` }}
+        style={coverStyle}
         role="img"
         aria-label={`Capa do livro ${book.title}`}
       >
-        <span className="campaign-card-pages">{book.totalPages} páginas</span>
+        <span className="campaign-card-pages">{pages} páginas</span>
       </div>
       <div className="campaign-card-body">
         <h3>{book.title}</h3>

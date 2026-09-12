@@ -552,6 +552,22 @@ input, textarea { font: inherit; color: inherit; }
 .field span { font-size: 0.82rem; color: var(--ink-soft); }
 .field input { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font-size: 0.95rem; outline: none; }
 .field input:focus { border-color: var(--brand); }
+.field textarea {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 0.95rem;
+  outline: none;
+  font-family: inherit;
+  line-height: 1.4;
+  min-height: 80px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.field textarea:focus { border-color: var(--brand); }
+.field small { font-size: 0.75rem; color: var(--muted); }
 .btn-primary { background: var(--brand); color: white; border: 0; padding: 11px 16px; border-radius: 10px; font-weight: 600; cursor: pointer; font-size: 0.95rem; }
 .btn-primary:hover { filter: brightness(1.08); }
 .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }

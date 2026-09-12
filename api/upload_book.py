@@ -824,9 +824,16 @@ class Handler(BaseHTTPRequestHandler):
                 _CAT_WHITELIST = {
                     'comum', 'programacao', 'tecnologia', 'gospel',
                     'literatura', 'autoajuda', 'outros',
+                    # 11/09/2026 (v19 — campanhas): landpages temáticas
+                    'batalha-espiritual', 'casamento-familia', 'infantil',
                 }
                 _cat_raw = (data.get('categoria') or '').strip()
                 categoria = _cat_raw if _cat_raw in _CAT_WHITELIST else 'programacao'
+                # 11/09/2026 (v19 — campanhas): descrição opcional exibida no
+                # card da landpage. Limite 1000 chars (banco permite mais,
+                # mas UI só aceita 280 — guardamos coerência).
+                _desc_raw = (data.get('description') or '').strip()
+                description = _desc_raw[:1000] if _desc_raw else None
 
                 # Validação: storage_path DEVE começar com user_id (isolamento!)
                 if not storage_path.startswith(f'{user_id}/'):
@@ -949,6 +956,7 @@ class Handler(BaseHTTPRequestHandler):
                 categoria = _cat_raw if _cat_raw in {
                     'comum', 'programacao', 'tecnologia',
                     'gospel', 'literatura', 'autoajuda', 'outros',
+                    'batalha-espiritual', 'casamento-familia', 'infantil',
                 } else 'programacao'
 
                 # 3. Salva PDF num path admin-only (storage_path = admin/admin_livro_{ts}.pdf)
@@ -1093,14 +1101,19 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(400, {'error': 'ebook_id obrigatório'})
 
                 # Campos opcionais — só atualiza o que vier (PUT parcial)
-                allowed = {'title', 'slug', 'author', 'price_cents', 'is_published', 'shareable', 'categoria'}
+                allowed = {'title', 'slug', 'author', 'price_cents', 'is_published', 'shareable', 'categoria', 'description'}
                 update = {k: v for k, v in data.items() if k in allowed and v is not None}
-                # 24/08/2026 (P8.1): whitelist inclui 'comum' (legado 19 livros P4) + 6 do P8.
+                # 24/08/2026 (P8.1) + 11/09/2026 (v19): whitelist inclui 'comum'
+                # (legado 19 livros P4) + 6 do P8 + 3 das campanhas.
                 if 'categoria' in update:
                     cat = str(update['categoria']).strip().lower()
-                    if cat not in {'comum', 'programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros'}:
-                        return self.send_json(400, {'error': f'categoria inválida: {cat!r}. Use: comum, programacao, tecnologia, gospel, literatura, autoajuda, outros.'})
+                    if cat not in {'comum', 'programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros', 'batalha-espiritual', 'casamento-familia', 'infantil'}:
+                        return self.send_json(400, {'error': f'categoria inválida: {cat!r}. Use: comum, programacao, tecnologia, gospel, literatura, autoajuda, outros, batalha-espiritual, casamento-familia, infantil.'})
                     update['categoria'] = cat
+                # 11/09/2026 (v19 — campanhas): descrição opcional.
+                if 'description' in update:
+                    desc = str(update['description']).strip()
+                    update['description'] = desc[:1000] if desc else None
                 if 'price_cents' in update:
                     update['price_cents'] = max(0, int(update['price_cents']))
                 if 'slug' in update:
