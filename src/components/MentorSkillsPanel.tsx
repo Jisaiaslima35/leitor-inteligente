@@ -41,6 +41,66 @@ interface SkillListItem {
 
 const ADMIN_SKILL_API = `${BASE_URL}admin-skill-api`
 
+// 17/09/2026 — Blindagem contra 401. Camadas:
+//   1) supabase.auth.getSession() (caminho canônico — pega do storage em memória)
+//   2) se sessão nula/expirada, refreshSession() (tenta renovar com o refresh_token)
+//   3) fallback: lê direto do localStorage a chave "sb-<projectref>-auth-token"
+//      Supabase v2 guarda o JSON inteiro com access_token lá. Útil quando o
+//      client do Supabase não inicializou direito (caso clássico: aba anônima
+//      ou storage particionado).
+function readTokenFromLocalStorage(): string | null {
+  try {
+    const ref = (import.meta as any).env?.VITE_SUPABASE_URL
+      ?.split('//')[1]?.split('.')[0]
+    const candidates = ref ? [`sb-${ref}-auth-token`] : []
+    // algumas versões antigas usam só "supabase.auth.token"
+    candidates.push('supabase.auth.token')
+    for (const k of candidates) {
+      const raw = window.localStorage.getItem(k)
+      if (!raw) continue
+      // formato Supabase v2: JSON cru { access_token, refresh_token, ... }
+      // formato antigo: "base64(json)"
+      try {
+        const obj = JSON.parse(raw)
+        const tok = obj?.access_token
+        if (typeof tok === 'string' && tok.length > 20) return tok
+      } catch {
+        // tenta base64
+        try {
+          const decoded = JSON.parse(atob(raw))
+          if (decoded?.access_token) return decoded.access_token as string
+        } catch { /* ignora */ }
+      }
+    }
+  } catch { /* SSR / localStorage bloqueado */ }
+  return null
+}
+
+async function getAdminBearer(): Promise<string | null> {
+  if (!SUPABASE_READY) return null
+  // 1) getSession
+  let token: string | null = null
+  try {
+    const { data: { session } } = await supabase.auth.getSession()
+    token = session?.access_token ?? null
+  } catch (e) {
+    console.warn('[admin-skill-api] getSession threw', e)
+  }
+  // 2) refresh se preciso
+  if (!token) {
+    try {
+      const r = await supabase.auth.refreshSession()
+      token = r.data.session?.access_token ?? null
+    } catch (e) {
+      console.warn('[admin-skill-api] refreshSession threw', e)
+    }
+  }
+  // 3) fallback localStorage
+  if (!token) token = readTokenFromLocalStorage()
+  console.log('[admin-skill-api] token resolved:', token ? `OK (${token.length} chars)` : 'VAZIO')
+  return token
+}
+
 export function MentorSkillsPanel() {
   const [ebooks, setEbooks] = useState<EbookRow[]>([])
   const [skills, setSkills] = useState<SkillListItem[]>([])
@@ -64,7 +124,10 @@ export function MentorSkillsPanel() {
         setEbooks((data as EbookRow[]) || [])
       }
       // Lista skills já geradas no disco
-      const r = await fetch(`${ADMIN_SKILL_API}/list-skills`)
+      const token = await getAdminBearer()
+      const r = await fetch(`${ADMIN_SKILL_API}/list-skills`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
       if (r.ok) {
         const j = await r.json()
         setSkills(j.skills || [])
@@ -94,9 +157,17 @@ export function MentorSkillsPanel() {
     setErr(null)
     setResult(null)
     try {
+      const token = await getAdminBearer()
+      if (!token) {
+        setErr('Sessão expirada. Faça login novamente.')
+        return
+      }
       const r = await fetch(`${ADMIN_SKILL_API}/generate-skill`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ book_slug: slug, mode: 'analyze' }),
       })
       const j = await r.json()

@@ -671,9 +671,18 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
                 inserted = json.loads(r.read())
                 print(f'[upload-job] user_library: {len(inserted)} row(s) inserida(s)', flush=True)
         except HTTPError as e:
-            body = e.read().decode('utf-8', errors='ignore')[:300]
-            print(f'[upload-job] ERRO user_library HTTP {e.code}: {body}', flush=True)
-            raise  # repropaga pra cair no except geral
+            # 409 = unique-constraint (user_id, ebook_id) já existe nesse user.
+            # O Prefer resolution=ignore-duplicates deveria mascarar isso, mas o
+            # PostgREST retorna 409 mesmo assim quando combinado com return=representation.
+            # Não é um erro de verdade — significa "essa pessoa já tem o livro na
+            # biblioteca". Continua o pipeline (limpa tmp, manda email, etc).
+            if e.code == 409:
+                body = e.read().decode('utf-8', errors='ignore')[:200]
+                print(f'[upload-job] user_library já existia (409, idempotente): {body}', flush=True)
+            else:
+                body = e.read().decode('utf-8', errors='ignore')[:300]
+                print(f'[upload-job] ERRO user_library HTTP {e.code}: {body}', flush=True)
+                raise  # outro erro real — repropaga
         except Exception as e:
             print(f'[upload-job] ERRO user_library: {e}', flush=True)
             raise

@@ -3,10 +3,10 @@
 Roda na porta 9131 separado do server.py legacy.
 """
 import json, re, sys, threading
+from functools import lru_cache  # 17/09/2026 — restaurado: ainda usado por cached_embed + _resolve_ebook_id
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
-from functools import lru_cache
 sys.path.insert(0, str(Path(__file__).parent))
 from book_meta import get_book_meta, build_system_prompt  # noqa: E402
 from semantic_helpers import (  # noqa: E402
@@ -188,16 +188,32 @@ KEY = hermes_key()
 # Procura skills geradas em /root/.hermes/profiles/leitor-inteligente/skills/<slug>/
 SKILLS_ROOT = Path('/root/.hermes/profiles/leitor-inteligente/skills')
 
-@lru_cache(maxsize=8)
+# 17/09/2026 — cache invalidado por mtime (auto-consistente com arquivos).
+# Bug pego: `@lru_cache` guardava `None` quando a skill não existia no boot.
+# Quando `admin_skill_gen` gerava a skill DEPOIS, o cache continuava stale
+# até alguém reiniciar o serviço. Trocado por cache com mtime check:
+# quando o arquivo SKILL.md muda, o cache é invalidado automaticamente.
+# Stat é barato (<1ms) e torna o cache self-contained (sem precisar
+# coordenar entre processos via HTTP/signal).
+_skill_cache: dict[str, tuple[float, dict | None]] = {}
+
 def _load_skill(slug: str) -> dict | None:
     """Carrega SKILL.md + patterns.md de uma skill gerada, se existir.
     Retorna dict {skill_md, patterns_md, slug} ou None.
-    Cacheado em memória — reinicia com o serviço.
-    """
+    Cache em memória invalidado por mtime do SKILL.md."""
     skill_dir = SKILLS_ROOT / slug
     skill_md = skill_dir / 'SKILL.md'
     if not skill_md.exists():
+        _skill_cache.pop(slug, None)
         return None
+    try:
+        mtime = skill_md.stat().st_mtime
+    except Exception:
+        _skill_cache.pop(slug, None)
+        return None
+    cached = _skill_cache.get(slug)
+    if cached and abs(cached[0] - mtime) < 0.001:
+        return cached[1]
     try:
         skill_text = skill_md.read_text(encoding='utf-8')
     except Exception as e:
@@ -210,7 +226,18 @@ def _load_skill(slug: str) -> dict | None:
             patterns_text = patterns_md.read_text(encoding='utf-8')
         except Exception as e:
             print(f'[_load_skill] erro lendo {patterns_md}: {e}', flush=True)
-    return {'slug': slug, 'skill_md': skill_text, 'patterns_md': patterns_text}
+    result = {'slug': slug, 'skill_md': skill_text, 'patterns_md': patterns_text}
+    _skill_cache[slug] = (mtime, result)
+    return result
+
+
+def invalidate_skill_cache(slug: str | None = None) -> None:
+    """17/09/2026 — limpa o cache de skills (chamado pelo admin_skill_gen
+    após gerar nova skill). Se slug=None, limpa tudo."""
+    if slug is None:
+        _skill_cache.clear()
+    else:
+        _skill_cache.pop(slug, None)
 
 
 def has_skill(slug: str) -> bool:
