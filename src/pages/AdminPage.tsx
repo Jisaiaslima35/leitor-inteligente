@@ -331,7 +331,12 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
         setUploadTitle('')
         setUploadSlug('')
         setUploadPrice('990')
-        await loadAll()
+        // 17/09/2026: loadAll() roda em fire-and-forget. Se Promise.all
+        // (profiles+purchases+ebooks) pendurar por qualquer motivo, finally
+        // { setUploadBusy(false) } NUNCA roda, e o botão fica amarelo
+        // "Enviando..." pra sempre. Em vez de await loadAll(), disparar
+        // sem await — finally libera o botão independente do refresh.
+        loadAll().catch((e) => console.warn('[admin-upload] loadAll falhou (UI não trava):', e))
       }
     } catch (err: any) {
       setUploadMsg(`❌ ${err?.message || 'Falha no upload'}`)

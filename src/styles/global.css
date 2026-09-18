@@ -251,6 +251,92 @@ input, textarea { font: inherit; color: inherit; }
   overflow: hidden;
   min-width: 0; /* permite encolher dentro do grid */
 }
+/* Breadcrumbs Dinâmicos do TOC */
+.toc-breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: var(--bg-elev, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  font-size: 0.83rem;
+  color: var(--ink-soft, #9ca3af);
+  cursor: pointer;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+  transition: border-color 0.2s, background 0.2s;
+}
+.toc-breadcrumbs:hover {
+  background: rgba(212, 175, 55, 0.08);
+  border-color: rgba(212, 175, 55, 0.35);
+}
+.toc-breadcrumb-icon {
+  color: #d4af37;
+  flex-shrink: 0;
+}
+.toc-breadcrumb-item {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.toc-breadcrumb-book {
+  color: var(--ink-soft, #cbd5e1);
+}
+.toc-breadcrumb-parent {
+  color: var(--ink-soft, #94a3b8);
+}
+.toc-breadcrumb-active {
+  color: #d4af37;
+  font-weight: 600;
+  max-width: 260px;
+}
+.toc-breadcrumb-sep {
+  opacity: 0.4;
+  font-size: 0.75rem;
+}
+.toc-breadcrumb-page {
+  margin-left: auto;
+  font-size: 0.78rem;
+  opacity: 0.8;
+  padding-left: 8px;
+  flex-shrink: 0;
+}
+
+/* Botão de Sumário no Toolbar */
+.toc-trigger-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(212, 175, 55, 0.12);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  color: #d4af37;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 600;
+  transition: background 0.15s, border-color 0.15s;
+}
+.toc-trigger-btn:hover {
+  background: rgba(212, 175, 55, 0.22);
+  border-color: #d4af37;
+}
+.toc-btn-label {
+  font-size: 0.82rem;
+}
+.toc-badge-count {
+  background: #d4af37;
+  color: #121214;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 10px;
+  line-height: 1;
+}
+
 .pdf-toolbar {
   display: flex;
   flex-direction: column;

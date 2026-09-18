@@ -47,6 +47,8 @@ export interface Book {
   /** Categoria do livro — controla quais features extras habilita.
    *  Adicionado 23/08/2026: Sala Dev só abre se === 'programacao'. */
   categoria: Categoria
+  /** Sumário estruturado hierárquico [[nivel, titulo, pagina], ...] extraído nativamente via PyMuPDF. */
+  toc?: [number, string, number][]
 }
 
 /** Categorias oficiais do Leitor.

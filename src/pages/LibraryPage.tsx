@@ -149,7 +149,7 @@ export function LibraryPage({ progress, onNavigate }: Props) {
                   <h4>
                     {book.title}
                     {isMine && <span className="my-book-badge">Meu livro</span>}
-                    {book.is_global && (
+                    {(book.is_global || book.skill_generated) && (
                       <span
                         className="my-book-badge"
                         style={{
@@ -162,6 +162,11 @@ export function LibraryPage({ progress, onNavigate }: Props) {
                       </span>
                     )}
                   </h4>
+                  {(book.is_global || book.skill_generated) && (
+                    <code className="author" style={{ fontSize: 11, color: 'var(--muted)' }}>
+                      slug: {book.slug}
+                    </code>
+                  )}
                   <div className="author">por {book.author}</div>
                 </div>
                 <div>

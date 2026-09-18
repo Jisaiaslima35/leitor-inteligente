@@ -71,7 +71,11 @@ instance/
 *.swo
 *~
 *.bak
+*.bak*
 *.tmp
+app/
+pnpm-lock.yaml
+pnpm-workspace.yaml
 
 # Test coverage / build artifacts
 coverage/

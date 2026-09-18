@@ -95,7 +95,7 @@ def _supabase_url_and_sr() -> tuple[str, str]:
             if sr:
                 break
     if not url:
-        url = 'https://yfnzlowtgnlqiznslh.supabase.co'  # fallback público (read-only)
+        url = 'https://yfnzlowtgnlqizobnslh.supabase.co'  # fallback público (read-only)
     return url, sr
 
 

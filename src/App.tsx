@@ -216,7 +216,7 @@ function InnerApp() {
     setLoadedAsGuest(false)
     if (!bookId) return
 
-    const applyMeta = (meta: { id?: string; slug?: string; ebook_id?: string; title?: string; author?: string; cover_url?: string; categoria?: string; total_pages?: number }) => {
+    const applyMeta = (meta: { id?: string; slug?: string; ebook_id?: string; title?: string; author?: string; cover_url?: string; categoria?: string; total_pages?: number; toc?: [number, string, number][] }) => {
       const CATEGORIAS_VALIDAS = new Set(['programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros', 'comum'])
       const cat: Categoria = meta.categoria && CATEGORIAS_VALIDAS.has(meta.categoria)
         ? (meta.categoria as Categoria)
@@ -242,6 +242,7 @@ function InnerApp() {
         highlights: [],
         chunks: [],
         categoria: cat,
+        toc: (meta.toc as [number, string, number][]) || [],
       })
     }
 

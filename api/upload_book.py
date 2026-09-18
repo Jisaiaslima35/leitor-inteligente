@@ -4,7 +4,7 @@ Recebe PDF uploaded pelo usuário, processa (texto ou OCR), indexa no Supabase
 com isolamento total por user_id. Cada usuário só vê/processa seus próprios PDFs.
 Roda na porta 9134.
 """
-import json, os, re, subprocess, time, traceback, uuid
+import json, os, re, shutil, subprocess, time, traceback, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -17,6 +17,13 @@ import smtplib
 import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+try:
+    import pymupdf
+except ImportError:
+    try:
+        import fitz as pymupdf
+    except ImportError:
+        pymupdf = None
 
 # --- Config ---
 SUPABASE_ENV = {}
@@ -198,14 +205,25 @@ Equipe Leitor Inteligente
 
 # --- Pipeline de processamento ---
 def detect_scanned(pdf_path: str) -> bool:
-    """PDF é escaneado se a média de chars por página é < 200.
+    """PDF é escaneado se a média de chars por página é < MIN_TEXT_PER_PAGE_CHARS.
+    Avalia via PyMuPDF nativo em milissegundos."""
+    try:
+        if pymupdf:
+            doc = pymupdf.open(pdf_path)
+            total_pages = doc.page_count
+            if total_pages <= 0:
+                doc.close()
+                return False
+            sample_count = min(total_pages, 25)
+            total_chars = 0
+            for i in range(sample_count):
+                total_chars += len(doc[i].get_text().strip())
+            doc.close()
+            avg_chars = total_chars / sample_count
+            return avg_chars < MIN_TEXT_PER_PAGE_CHARS
+    except Exception as e:
+        print(f'[upload] detect_scanned pymupdf falhou: {e}', flush=True)
 
-    IMPORTANTE: usa extração do doc INTEIRO + divide por page count, porque
-    `pdftotext -f X -l Y` retorna vazio em alguns PDFs (bug do poppler com
-    PDFs de origem iText/pdftk como '21 dias para curar...' 132p).
-    Sem esse fix, livros com texto seriam classificados como escaneados
-    e o OCR (lento + pode garble) rodaria à toa.
-    """
     try:
         result = subprocess.run(
             ['pdftotext', pdf_path, '-'],
@@ -214,8 +232,6 @@ def detect_scanned(pdf_path: str) -> bool:
         total_chars = len(result.stdout.strip())
         page_count = get_real_page_count(pdf_path)
         if page_count <= 0:
-            # Sem page count, fallback conservador: se tem > 1000 chars totais,
-            # provavelmente tem texto. Caso contrário, tenta OCR.
             return total_chars < 1000
         avg_chars = total_chars / page_count
         return avg_chars < MIN_TEXT_PER_PAGE_CHARS
@@ -224,8 +240,17 @@ def detect_scanned(pdf_path: str) -> bool:
 
 
 def get_real_page_count(pdf_path: str) -> int:
-    """Extrai contagem REAL de páginas via pdfinfo (poppler-utils).
-    Mais confiável que regex no frontend. Retorna 0 se falhar."""
+    """Extrai contagem REAL de páginas via PyMuPDF (com fallback para pdfinfo)."""
+    try:
+        if pymupdf:
+            doc = pymupdf.open(pdf_path)
+            count = doc.page_count
+            doc.close()
+            if count > 0:
+                return count
+    except Exception as e:
+        print(f'[upload] pymupdf get_real_page_count falhou: {e}', flush=True)
+
     try:
         result = subprocess.run(
             ['pdfinfo', pdf_path],
@@ -240,7 +265,10 @@ def get_real_page_count(pdf_path: str) -> int:
 
 
 def run_ocr(input_pdf: str, output_pdf: str) -> bool:
-    """Roda Tesseract PT-BR via ocrmypdf."""
+    """Roda Tesseract PT-BR via ocrmypdf se o binário estiver instalado."""
+    if not shutil.which('ocrmypdf'):
+        print('[upload] OCR ignorado: binário ocrmypdf não instalado no sistema', flush=True)
+        return False
     try:
         result = subprocess.run(
             ['ocrmypdf', '-l', 'por', '--skip-text', '--deskew', '--clean',
@@ -330,31 +358,31 @@ def run_marker_ocr(input_pdf: str, output_md: str) -> bool:
 def extract_pages_with_fallback(pdf_path: str) -> list[dict]:
     """Pipeline híbrido de extração (3 níveis).
 
-    1. pdftotext direto (PDF com texto embutido)
-    2. Tesseract via ocrmypdf (PDF escaneado)
-    3. marker-pdf (último recurso, consome 4-6GB RAM, usa lock)
+    1. PyMuPDF nativo direto (rápido, in-memory, vetorial, sem timeouts)
+    2. Tesseract via ocrmypdf (se instalado e PDF for escaneado)
+    3. marker-pdf (último recurso com lock para PDFs escaneados)
 
     Retorna [{page: int, text: str}, ...].
     """
-    # Nível 1: pdftotext direto
+    # Nível 1: PyMuPDF nativo direto
     pages = extract_pages(pdf_path)
     total_chars = sum(len(p['text']) for p in pages)
     if total_chars >= 1000:
-        print(f'[extract] N1 OK: {len(pages)} páginas, {total_chars} chars (pdftotext)', flush=True)
+        print(f'[extract] N1 PyMuPDF OK: {len(pages)} páginas, {total_chars} chars', flush=True)
         return pages
-    print(f'[extract] N1 fraco: {total_chars} chars. Tentando Tesseract...', flush=True)
+    print(f'[extract] N1 fraco: {total_chars} chars. Tentando OCR...', flush=True)
 
-    # Nível 2: Tesseract
+    # Nível 2: OCR se binário existir
     ocr_path = pdf_path + '.ocr.pdf'
-    if not run_ocr(pdf_path, ocr_path):
-        print(f'[extract] N2 falhou (Tesseract erro). Indo pra marker-pdf...', flush=True)
+    if run_ocr(pdf_path, ocr_path):
+        ocr_pages = extract_pages(ocr_path)
+        ocr_total_chars = sum(len(p['text']) for p in ocr_pages)
+        if ocr_total_chars >= 1000:
+            print(f'[extract] N2 OK: {len(ocr_pages)} páginas, {ocr_total_chars} chars (OCR)', flush=True)
+            return ocr_pages
+        print(f'[extract] N2 fraco: {ocr_total_chars} chars. Indo pra marker-pdf...', flush=True)
     else:
-        pages = extract_pages(ocr_path)
-        total_chars = sum(len(p['text']) for p in pages)
-        if total_chars >= 1000:
-            print(f'[extract] N2 OK: {len(pages)} páginas, {total_chars} chars (Tesseract)', flush=True)
-            return pages
-        print(f'[extract] N2 fraco: {total_chars} chars. Indo pra marker-pdf...', flush=True)
+        print(f'[extract] N2 pulado ou indisponível. Indo pra marker-pdf...', flush=True)
 
     # Nível 3: marker-pdf (com lock)
     md_path = pdf_path + '.marker.md'
@@ -365,28 +393,46 @@ def extract_pages_with_fallback(pdf_path: str) -> list[dict]:
                     md_text = f.read()
                 if len(md_text) >= 1000:
                     print(f'[extract] N3 OK: {len(md_text)} chars (marker-pdf)', flush=True)
-                    # Marker retorna markdown contínuo, sem split por página.
-                    # Trade-off: RAG funciona, perdemos navegação por página.
                     return [{'page': 1, 'text': md_text}]
     except TimeoutError:
         print(f'[extract] N3 timeout esperando lock. Sem mais fallbacks.', flush=True)
 
-    print(f'[extract] N3 falhou. Sem mais fallbacks.', flush=True)
-    return pages  # retorna o melhor que conseguiu (provavelmente fraco)
+    print(f'[extract] N3 finalizado. Retornando o melhor resultado obtido ({len(pages)} págs).', flush=True)
+    return pages
 
 
 def extract_pages(pdf_path: str) -> list[dict]:
-    """Extrai texto por página. Retorna [{page: int, text: str}, ...]."""
-    result = subprocess.run(
-        ['pdftotext', '-layout', pdf_path, '-'],
-        capture_output=True, text=True, timeout=60
-    )
-    pages_raw = result.stdout.split('\f')
+    """Extrai texto por página nativamente com PyMuPDF.
+    Fallback para pdftotext se PyMuPDF falhar ou não estiver disponível."""
     pages = []
-    for i, txt in enumerate(pages_raw, 1):
-        txt = txt.strip()
-        if len(txt) > 5:  # ignora páginas vazias/capa
-            pages.append({'page': i, 'text': txt})
+    if pymupdf:
+        try:
+            doc = pymupdf.open(pdf_path)
+            for i, p in enumerate(doc, 1):
+                txt = p.get_text().strip()
+                if len(txt) > 5:
+                    pages.append({'page': i, 'text': txt})
+            doc.close()
+            if pages:
+                return pages
+        except Exception as e:
+            print(f'[extract] PyMuPDF extract_pages falhou: {e}', flush=True)
+
+    try:
+        result = subprocess.run(
+            ['pdftotext', '-layout', pdf_path, '-'],
+            capture_output=True, text=True, timeout=120
+        )
+        pages_raw = result.stdout.split('\f')
+        for i, txt in enumerate(pages_raw, 1):
+            txt = txt.strip()
+            if len(txt) > 5:
+                pages.append({'page': i, 'text': txt})
+    except subprocess.TimeoutExpired:
+        print(f'[extract] pdftotext TIMEOUT (>120s), mantendo resultado ({len(pages)} págs)', flush=True)
+    except Exception as e:
+        print(f'[extract] pdftotext erro: {e}', flush=True)
+
     return pages
 
 
@@ -425,6 +471,42 @@ def chapter_for_page(page_num: int, chapters: list) -> tuple[int | None, str | N
         if start <= page_num <= end:
             return n, title
     return None, None
+
+
+def extract_toc(pdf_path: str, pages: list[dict] = None) -> list[list]:
+    """Extrai sumário estruturado (TOC) nativo via PyMuPDF doc.get_toc(simple=True).
+    Retorna lista [[nivel, titulo, pagina], ...].
+    Fallback para detecção de capítulos por regex se o PDF não tiver marcadores nativos."""
+    toc_list = []
+    try:
+        try:
+            import pymupdf as fitz
+        except ImportError:
+            import fitz
+        with fitz.open(pdf_path) as doc:
+            raw_toc = doc.get_toc(simple=True)
+            if raw_toc:
+                for item in raw_toc:
+                    if len(item) >= 3:
+                        lvl, title, pno = item[0], item[1], item[2]
+                        title_clean = str(title).replace('\xad', '').strip()
+                        if title_clean and isinstance(pno, int) and pno > 0:
+                            toc_list.append([int(lvl), title_clean, int(pno)])
+    except Exception as e:
+        print(f'[upload-job] WARN extract_toc via pymupdf falhou: {e}', flush=True)
+
+    # Fallback: se não houver TOC nativo e tivermos pages, usa capítulos detectados
+    if not toc_list and pages:
+        try:
+            chapters = detect_chapters(pages)
+            for ch_num, ch_title, start_page, _ in chapters:
+                clean_title = str(ch_title).replace('\xad', '').strip()
+                if clean_title and start_page > 0:
+                    toc_list.append([1, clean_title, int(start_page)])
+        except Exception as e:
+            print(f'[upload-job] WARN fallback toc falhou: {e}', flush=True)
+
+    return toc_list
 
 
 # --- Jobs em background ---
@@ -484,6 +566,9 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
 
         # 4. Detecta capítulos
         chapters = detect_chapters(pages)
+        # 4b. Extrai TOC estruturado (PyMuPDF doc.get_toc + fallback)
+        toc = extract_toc(process_pdf, pages)
+        print(f'[upload-job] TOC extraído: {len(toc)} marcadores encontrados', flush=True)
 
         # 5. Salva PDF final no path do ebook (depois do upload original pra signed URL funcionar após)
         import shutil
@@ -640,9 +725,13 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
             print(f'[upload-job] cover extraction falhou (não-crítico): {cover_err}', flush=True)
             traceback.print_exc()
 
-        # 10. UPDATE ebook (chapter_count + cover_url + total_pages)
+        # 10. UPDATE ebook (chapter_count + cover_url + total_pages + toc)
         chapter_count = len(chapters) if chapters else 0
-        upd_payload = {'chapter_count': chapter_count, 'total_pages': len(pages)}
+        upd_payload = {
+            'chapter_count': chapter_count,
+            'total_pages': len(pages),
+            'toc': toc,
+        }
         if cover_url:
             upd_payload['cover_url'] = cover_url
         upd_req = Request(
@@ -897,6 +986,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/api/admin/upload-book':
             # Admin livre: upload SEM pagamento/checkout/upload_payments.
             # v14.1: usa Bearer JWT admin via `_check_admin_request`.
+            # Inicializa variáveis para que o bloco except Exception nunca sofra UnboundLocalError
+            title = None
+            slug = None
+            ebook_id = None
+            storage_path = None
             try:
                 # 1. Valida autorização admin (Bearer JWT OU X-Admin-Token legacy)
                 admin_ok, admin_reason = _check_admin_request(self)
@@ -975,6 +1069,7 @@ class Handler(BaseHTTPRequestHandler):
                 if pdf_size > MAX_PDF_MB * 1024 * 1024:
                     return self.send_json(413, {'error': f'PDF > {MAX_PDF_MB}MB'})
 
+                print(f'[admin-upload] STEP 3: caminho={storage_path} size={pdf_size}', flush=True)
                 # Upload pro bucket 'ebooks' (privado)
                 upload_req = Request(
                     f'{SUPABASE_URL}/storage/v1/object/ebooks/{storage_path}',
@@ -989,7 +1084,11 @@ class Handler(BaseHTTPRequestHandler):
                         print(f'[admin-upload] PDF salvo em {storage_path} ({pdf_size} bytes)', flush=True)
                 except HTTPError as e:
                     body = e.read().decode('utf-8', errors='ignore')[:300]
-                    return self.send_json(500, {'error': f'Storage: HTTP {e.code}: {body}'})
+                    return self.send_json(500, {'error': f'Storage Supabase: HTTP {e.code}: {body}'})
+                except (URLError, TimeoutError) as e:
+                    return self.send_json(502, {'error': f'Falha de rede/timeout no envio ao Storage Supabase: {e}'})
+                except Exception as e:
+                    return self.send_json(500, {'error': f'Erro inesperado no envio ao Storage: {type(e).__name__}: {e}'})
 
                 # 4. INSERT ebook (com owner_user_id = ADMIN)
                 ebook_req = Request(
@@ -1011,10 +1110,39 @@ class Handler(BaseHTTPRequestHandler):
                              'Prefer': 'return=representation'},
                     method='POST'
                 )
-                with urlopen(ebook_req, timeout=15) as r:
-                    ebook_data = json.loads(r.read())
-                ebook_id = ebook_data[0]['id']
-                print(f'[admin-upload] ebook criado: id={ebook_id} slug={slug}', flush=True)
+                try:
+                    with urlopen(ebook_req, timeout=15) as r:
+                        ebook_data = json.loads(r.read())
+                    ebook_id = ebook_data[0]['id']
+                    print(f'[admin-upload] ebook criado: id={ebook_id} slug={slug}', flush=True)
+                except HTTPError as e:
+                    # 17/09/2026 — slug duplicado vira 409 → era 500 silencioso.
+                    # Isaías: "Claudinho, o upload de e-books voltou a dar Erro 500".
+                    # Causa: o front gera slug a partir do title e o admin pode
+                    # subir o mesmo livro 2x (reindexar, reprocessar). Antes o
+                    # HTTPError caía no except Exception genérico e devolvia
+                    # `str(e)[:500]` sem indicar o problema. Agora busca o ebook
+                    # existente e segue o pipeline — mesmo padrão do fix do
+                    # user_library no commit 956260a.
+                    if e.code == 409:
+                        body = e.read().decode('utf-8', errors='ignore')[:200]
+                        print(f'[admin-upload] slug já existia (409, idempotente): {body}', flush=True)
+                        lookup_req = Request(
+                            f'{SUPABASE_URL}/rest/v1/ebooks?slug=eq.{slug}&select=id,owner_user_id,is_published&limit=1',
+                            headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+                        )
+                        with urlopen(lookup_req, timeout=15) as lr:
+                            existing = json.loads(lr.read())
+                        if not existing:
+                            return self.send_json(500, {'error': f'slug "{slug}" conflita mas ebook não encontrado'})
+                        ebook_id = existing[0]['id']
+                        print(f'[admin-upload] reutilizando ebook existente: id={ebook_id}', flush=True)
+                    else:
+                        body = e.read().decode('utf-8', errors='ignore')[:300]
+                        return self.send_json(500, {'error': f'ebooks INSERT HTTP {e.code}: {body}'})
+
+                # FIM do try/except do ebook INSERT. ebook_id={ebook_id}.
+                print(f'[admin-upload] STEP 4: ebook_id={ebook_id} slug={slug} — indo pro user_library', flush=True)
 
                 # 5. Insere em user_library do ADMIN (libera imediato, sem esperar index)
                 lib_req = Request(
@@ -1083,8 +1211,10 @@ class Handler(BaseHTTPRequestHandler):
                     'message': f'Livro "{title}" cadastrado. Indexando em background (~{eta_seconds//60} min).',
                 })
             except Exception as e:
+                print(f'[admin-upload] FATAL Exception não-tratada: {type(e).__name__}: {e}', flush=True)
+                print(f'[admin-upload] locals: title={title!r} slug={slug!r} ebook_id={ebook_id!r} storage_path={storage_path!r}', flush=True)
                 traceback.print_exc()
-                return self.send_json(500, {'error': str(e)[:500]})
+                return self.send_json(500, {'error': f'{type(e).__name__}: {str(e)[:400]}'})
 
         self.send_json(404, {'error': 'not found'})
 

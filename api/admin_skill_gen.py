@@ -14,11 +14,12 @@
 # Server: porta 9140 (escolhida pra não conflitar com leitor-inteligente-api 9120,
 # semantic 9131, upload 9122 etc). Roda em background via systemd.
 
-import json, os, re, shutil, subprocess, sys, tempfile, traceback, threading
+import json, os, re, shutil, subprocess, sys, tempfile, time, traceback, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse as urllib_urlparse, parse_qs as urllib_parse_qs
 
 sys.path.insert(0, '/root/projetos/leitor-inteligente/api')
 from _auth import is_admin_jwt  # noqa: E402
@@ -112,9 +113,21 @@ def export_book_text(slug: str) -> dict:
         ebook_id = book['id']
 
         # ebook_pages tem page_text — concatena tudo na ordem
-        pages = supa_get(
-            f'ebook_pages?select=page_number,page_text&ebook_id=eq.{ebook_id}&order=page_number&limit=2000'
-        )
+        # Pagina todas as páginas sem limite rígido de 2000 páginas
+        pages = []
+        offset = 0
+        batch_size = 1000
+        while True:
+            batch = supa_get(
+                f'ebook_pages?select=page_number,page_text&ebook_id=eq.{ebook_id}&order=page_number&limit={batch_size}&offset={offset}'
+            )
+            if not batch:
+                break
+            pages.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+
         if not pages:
             return {'ok': False, 'error': f'ebook_pages vazio pra ebook_id={ebook_id} (livro sem texto extraído?)'}
 
@@ -371,7 +384,83 @@ def update_soul_md(skill_slug: str, title: str):
     print(f'[admin-skill-gen] SOUL.md atualizado: {skill_slug}', flush=True)
     return True
 
-# --- HTTP -----------------------------------------------------------------
+# --- Estado de Tarefas Assíncronas -----------------------------------------
+JOBS: dict[str, dict] = {}
+
+
+def _skill_worker(book_slug: str, mode: str):
+    """Executa a esteira pesada de geração de skill em background."""
+    try:
+        print(f'[admin-skill-gen] [BG-WORKER] START slug={book_slug} mode={mode}', flush=True)
+        JOBS[book_slug] = {
+            'status': 'processing',
+            'message': 'Exportando texto do livro...',
+            'started_at': time.time(),
+        }
+
+        # Step 1: exporta texto
+        exp = export_book_text(book_slug)
+        if not exp['ok']:
+            JOBS[book_slug] = {
+                'status': 'failed',
+                'error': exp.get('error', 'Falha ao exportar texto do Supabase'),
+            }
+            return
+
+        JOBS[book_slug]['message'] = f'Analisando {exp["total_pages"]} páginas com Hermes...'
+        # Step 2: roda book-to-skill analyze
+        gen = run_book_to_skill(
+            exp['txt_path'], book_slug,
+            title=exp['title'], author=exp['author'],
+            first_chars_in=exp.get('first_chars', ''),
+            mode=mode,
+        )
+        if not gen['ok']:
+            JOBS[book_slug] = {
+                'status': 'failed',
+                'error': gen.get('error', 'Falha na análise Hermes'),
+            }
+            return
+
+        # Step 3: monta SKILL.md + cheatsheet no padrão validado
+        analysis_md = Path(gen['analysis_path']).read_text(encoding='utf-8')
+        built = build_skill_files(book_slug, exp['title'], exp['author'], analysis_md)
+
+        # Step 4: atualiza SOUL.md
+        update_soul_md(book_slug, exp['title'])
+
+        # Step 5: marca ebooks.skill_generated = true
+        try:
+            ebooks = supa_get(f'ebooks?select=id&slug=eq.{book_slug}&limit=1')
+            if ebooks:
+                supa_patch(
+                    'ebooks',
+                    f'id=eq.{ebooks[0]["id"]}',
+                    {'skill_generated': True, 'skill_generated_at': 'now()'},
+                )
+        except Exception as e:
+            print(f'[admin-skill-gen] WARN marcou skill_generated: {e}', flush=True)
+
+        result_data = {
+            'ok': True,
+            'slug': book_slug,
+            'title': exp['title'],
+            'author': exp['author'],
+            'total_pages': exp['total_pages'],
+            'total_chars': exp['total_chars'],
+            'skill_dir': built['skill_dir'],
+            'files': built['files'],
+        }
+        JOBS[book_slug] = {
+            'status': 'completed',
+            'result': result_data,
+            'completed_at': time.time(),
+        }
+        print(f'[admin-skill-gen] [BG-WORKER] DONE slug={book_slug}', flush=True)
+    except Exception as e:
+        print(f'[admin-skill-gen] [BG-WORKER] ERROR slug={book_slug}: {e}\n{traceback.format_exc()}', flush=True)
+        JOBS[book_slug] = {'status': 'failed', 'error': str(e)[:500]}
+
 
 def send_json(handler, code, obj):
     body = json.dumps(obj, ensure_ascii=False).encode('utf-8')
@@ -383,6 +472,7 @@ def send_json(handler, code, obj):
     handler.send_header('Access-Control-Allow-Methods', 'POST,GET,OPTIONS')
     handler.end_headers()
     handler.wfile.write(body)
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args, **kwargs):
@@ -396,14 +486,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path == '/health':
+        parsed = urllib_urlparse(self.path)
+        path = parsed.path
+        query = urllib_parse_qs(parsed.query)
+
+        if path == '/health':
             return send_json(self, 200, {'status': 'ok', 'service': 'admin-skill-gen'})
-        if self.path == '/list-skills':
-            # Lista skills já geradas (diretórios em ~/.hermes/profiles/leitor-inteligente/skills/)
+
+        # ── Proteção com autenticação admin para rotas protegidas ──
+        auth = self.headers.get('Authorization', '')
+        if not auth.lower().startswith('bearer '):
+            print(f'[admin-skill-gen] 401 sem Authorization Bearer em {path}', flush=True)
+            return send_json(self, 401, {'error': 'Authorization Bearer <token> obrigatório'})
+        token = auth.split(' ', 1)[1].strip()
+        admin_check = is_admin_jwt(token)
+        if not admin_check['ok']:
+            print(f"[admin-skill-gen] 403 não-admin em {path} email={admin_check.get('email')!r} reason={admin_check.get('reason')}", flush=True)
+            return send_json(self, 403, {'error': f"acesso negado: {admin_check['reason']}"})
+
+        if path == '/list-skills':
             skills = []
             if SKILLS_ROOT.exists():
                 for d in sorted(SKILLS_ROOT.iterdir()):
-                    # Pula dotfiles (.curator_backups etc) e arquivos soltos
                     if not d.is_dir() or d.name.startswith('.'):
                         continue
                     try:
@@ -414,13 +518,34 @@ class Handler(BaseHTTPRequestHandler):
                         print(f'[admin-skill-gen] skip {d}: {e}', flush=True)
                         continue
             return send_json(self, 200, {'skills': skills, 'count': len(skills)})
+
+        if path == '/skill-status':
+            slug = query.get('slug', [''])[0].strip()
+            if not slug:
+                return send_json(self, 400, {'error': 'slug obrigatório'})
+            job = JOBS.get(slug)
+            if job:
+                return send_json(self, 200, job)
+            # Se não há job ativo em memória mas a skill existe em disco
+            skill_md = SKILLS_ROOT / slug / 'SKILL.md'
+            if skill_md.exists():
+                return send_json(self, 200, {
+                    'status': 'completed',
+                    'result': {
+                        'ok': True,
+                        'slug': slug,
+                        'skill_dir': str(SKILLS_ROOT / slug),
+                    }
+                })
+            return send_json(self, 200, {'status': 'idle', 'slug': slug})
+
         return send_json(self, 404, {'error': 'not found'})
 
     def do_POST(self):
         if self.path != '/generate-skill':
             return send_json(self, 404, {'error': 'not found'})
+
         # ── v14.1 segurança: exige Authorization Bearer JWT + email admin ──
-        # Substitui o fallback antigo que confiava no token estático.
         auth = self.headers.get('Authorization', '')
         if not auth.lower().startswith('bearer '):
             print('[admin-skill-gen] 401 sem Authorization Bearer', flush=True)
@@ -442,50 +567,29 @@ class Handler(BaseHTTPRequestHandler):
             mode = str(data.get('mode', 'analyze'))  # 'analyze' | 'full'
             print(f'[admin-skill-gen] POST generate-skill slug={book_slug} mode={mode}', flush=True)
 
-            # Step 1: exporta texto
-            exp = export_book_text(book_slug)
-            if not exp['ok']:
-                return send_json(self, 400, exp)
+            # Se já está processando este slug, devolve status atual
+            current_job = JOBS.get(book_slug)
+            if current_job and current_job.get('status') == 'processing':
+                return send_json(self, 200, {
+                    'ok': True,
+                    'status': 'processing',
+                    'slug': book_slug,
+                    'message': 'Geração de skill já em andamento em background.',
+                })
 
-            # Step 2: roda book-to-skill analyze
-            gen = run_book_to_skill(
-                exp['txt_path'], book_slug,
-                title=exp['title'], author=exp['author'],
-                first_chars_in=exp.get('first_chars', ''),
-                mode=mode,
-            )
-            if not gen['ok']:
-                return send_json(self, 500, gen)
-
-            # Step 3: monta SKILL.md + cheatsheet no padrão validado
-            analysis_md = Path(gen['analysis_path']).read_text(encoding='utf-8')
-            built = build_skill_files(book_slug, exp['title'], exp['author'], analysis_md)
-
-            # Step 4: atualiza SOUL.md
-            update_soul_md(book_slug, exp['title'])
-
-            # Step 5: marca ebooks.skill_generated = true
-            try:
-                # Busca ebook_id pra fazer o PATCH
-                ebooks = supa_get(f'ebooks?select=id&slug=eq.{book_slug}&limit=1')
-                if ebooks:
-                    supa_patch(
-                        'ebooks',
-                        f'id=eq.{ebooks[0]["id"]}',
-                        {'skill_generated': True, 'skill_generated_at': 'now()'},
-                    )
-            except Exception as e:
-                print(f'[admin-skill-gen] WARN marcou skill_generated: {e}', flush=True)
+            # Inicia tarefa em background para não derrubar a conexão HTTP por timeout
+            JOBS[book_slug] = {
+                'status': 'processing',
+                'message': 'Iniciando pipeline de geração de skill...',
+                'started_at': time.time(),
+            }
+            threading.Thread(target=_skill_worker, args=(book_slug, mode), daemon=True).start()
 
             return send_json(self, 200, {
                 'ok': True,
+                'status': 'processing',
                 'slug': book_slug,
-                'title': exp['title'],
-                'author': exp['author'],
-                'total_pages': exp['total_pages'],
-                'total_chars': exp['total_chars'],
-                'skill_dir': built['skill_dir'],
-                'files': built['files'],
+                'message': f'Geração de skill para "{book_slug}" iniciada em background.',
             })
         except Exception as e:
             print(f'[admin-skill-gen] ERROR: {e}\n{traceback.format_exc()}', flush=True)

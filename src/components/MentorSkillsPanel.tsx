@@ -41,13 +41,27 @@ interface SkillListItem {
 
 const ADMIN_SKILL_API = `${BASE_URL}admin-skill-api`
 
+function isJwtValidAndNotExpired(token: string): boolean {
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return false
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
+    const nowSec = Math.floor(Date.now() / 1000)
+    // Se não tiver exp ou exp <= nowSec + 30s, considera expirado
+    if (!payload.exp || payload.exp <= nowSec + 30) {
+      return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 // 17/09/2026 — Blindagem contra 401. Camadas:
 //   1) supabase.auth.getSession() (caminho canônico — pega do storage em memória)
 //   2) se sessão nula/expirada, refreshSession() (tenta renovar com o refresh_token)
 //   3) fallback: lê direto do localStorage a chave "sb-<projectref>-auth-token"
-//      Supabase v2 guarda o JSON inteiro com access_token lá. Útil quando o
-//      client do Supabase não inicializou direito (caso clássico: aba anônima
-//      ou storage particionado).
+//      Supabase v2 guarda o JSON inteiro com access_token lá. Valida expiração antes de usar.
 function readTokenFromLocalStorage(): string | null {
   try {
     const ref = (import.meta as any).env?.VITE_SUPABASE_URL
@@ -58,17 +72,16 @@ function readTokenFromLocalStorage(): string | null {
     for (const k of candidates) {
       const raw = window.localStorage.getItem(k)
       if (!raw) continue
-      // formato Supabase v2: JSON cru { access_token, refresh_token, ... }
-      // formato antigo: "base64(json)"
       try {
         const obj = JSON.parse(raw)
         const tok = obj?.access_token
-        if (typeof tok === 'string' && tok.length > 20) return tok
+        if (typeof tok === 'string' && tok.length > 20 && isJwtValidAndNotExpired(tok)) return tok
       } catch {
-        // tenta base64
         try {
           const decoded = JSON.parse(atob(raw))
-          if (decoded?.access_token) return decoded.access_token as string
+          if (decoded?.access_token && isJwtValidAndNotExpired(decoded.access_token)) {
+            return decoded.access_token as string
+          }
         } catch { /* ignora */ }
       }
     }
@@ -78,26 +91,43 @@ function readTokenFromLocalStorage(): string | null {
 
 async function getAdminBearer(): Promise<string | null> {
   if (!SUPABASE_READY) return null
+  const nowSec = Math.floor(Date.now() / 1000)
   // 1) getSession
   let token: string | null = null
+  let expiresAt: number | null = null // unix seconds
   try {
     const { data: { session } } = await supabase.auth.getSession()
     token = session?.access_token ?? null
+    expiresAt = session?.expires_at ?? null
   } catch (e) {
     console.warn('[admin-skill-api] getSession threw', e)
   }
-  // 2) refresh se preciso
-  if (!token) {
+
+  // Se token ausente ou expirado (< 60s), ou não passa validação
+  const isInvalidOrExpired = !token || (expiresAt !== null && expiresAt <= nowSec + 60) || !isJwtValidAndNotExpired(token)
+
+  // 2) Se necessário, tenta refreshSession()
+  if (isInvalidOrExpired) {
     try {
       const r = await supabase.auth.refreshSession()
       token = r.data.session?.access_token ?? null
+      expiresAt = r.data.session?.expires_at ?? null
     } catch (e) {
       console.warn('[admin-skill-api] refreshSession threw', e)
     }
   }
-  // 3) fallback localStorage
-  if (!token) token = readTokenFromLocalStorage()
-  console.log('[admin-skill-api] token resolved:', token ? `OK (${token.length} chars)` : 'VAZIO')
+
+  // 3) Fallback localStorage (apenas tokens válidos e dentro do prazo)
+  if (!token || !isJwtValidAndNotExpired(token)) {
+    token = readTokenFromLocalStorage()
+  }
+
+  if (token && !isJwtValidAndNotExpired(token)) {
+    console.warn('[admin-skill-api] Token local está expirado.')
+    return null
+  }
+
+  console.log('[admin-skill-api] token resolved:', token ? `OK (${token.length} chars, expira em ${expiresAt ? expiresAt - nowSec + 's' : 'válido'})` : 'EXPIRADO/NULO')
   return token
 }
 
@@ -106,6 +136,7 @@ export function MentorSkillsPanel() {
   const [skills, setSkills] = useState<SkillListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [busySlug, setBusySlug] = useState<string | null>(null)
+  const [statusMsg, setStatusMsg] = useState<string | null>(null)
   const [result, setResult] = useState<SkillGenResponse | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [query, setQuery] = useState('')
@@ -125,13 +156,24 @@ export function MentorSkillsPanel() {
       }
       // Lista skills já geradas no disco
       const token = await getAdminBearer()
-      const r = await fetch(`${ADMIN_SKILL_API}/list-skills`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-      if (r.ok) {
-        const j = await r.json()
-        setSkills(j.skills || [])
+      if (!token) {
+        setErr('Sessão expirada ou não autenticada. Por favor, faça login novamente no painel para renovar a sessão.')
+        setLoading(false)
+        return
       }
+      const r = await fetch(`${ADMIN_SKILL_API}/list-skills`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!r.ok) {
+        if (r.status === 401 || r.status === 403) {
+          setErr('Sessão expirada ou sem permissão de administrador. Renove seu login.')
+        } else {
+          setErr(`Erro ao listar skills: HTTP ${r.status}`)
+        }
+        return
+      }
+      const j = await r.json()
+      setSkills(j.skills || [])
     } catch (e: any) {
       setErr(e?.message || String(e))
     } finally {
@@ -152,14 +194,17 @@ export function MentorSkillsPanel() {
   )
 
   async function generateSkill(slug: string, title: string) {
-    if (!confirm(`Gerar skill de Mentor pro livro "${title}"?\n\nIsso roda a pipeline book-to-skill (5-10min). Pode sobrescrever skill existente.`)) return
+    if (!confirm(`Gerar skill de Mentor pro livro "${title}"?\n\nIsso roda a pipeline book-to-skill. O processamento ocorrerá em segundo plano com acompanhamento em tempo real.`)) return
     setBusySlug(slug)
+    setStatusMsg('Iniciando processamento em segundo plano...')
     setErr(null)
     setResult(null)
     try {
       const token = await getAdminBearer()
       if (!token) {
-        setErr('Sessão expirada. Faça login novamente.')
+        setErr('Sessão expirada. Faça login novamente no painel para renovar a sessão.')
+        setBusySlug(null)
+        setStatusMsg(null)
         return
       }
       const r = await fetch(`${ADMIN_SKILL_API}/generate-skill`, {
@@ -173,14 +218,71 @@ export function MentorSkillsPanel() {
       const j = await r.json()
       if (!r.ok || j.error) {
         setErr(j.error || `HTTP ${r.status}`)
+        setBusySlug(null)
+        setStatusMsg(null)
         return
       }
+
+      // Se retornou status 'processing', inicia polling
+      if (j.status === 'processing') {
+        setStatusMsg(j.message || 'Geração de skill em andamento...')
+        const pollInterval = 4000
+        const maxAttempts = 225 // ~15min timeout
+        let attempts = 0
+
+        while (attempts < maxAttempts) {
+          attempts++
+          await new Promise(res => setTimeout(res, pollInterval))
+
+          try {
+            const currentToken = await getAdminBearer()
+            const pollRes = await fetch(`${ADMIN_SKILL_API}/skill-status?slug=${slug}`, {
+              headers: currentToken ? { Authorization: `Bearer ${currentToken}` } : {},
+            })
+
+            if (!pollRes.ok) {
+              if (pollRes.status === 401 || pollRes.status === 403) {
+                setErr('Sessão expirada durante o processamento. Renove seu login.')
+                break
+              }
+              continue
+            }
+
+            const pollData = await pollRes.json()
+            if (pollData.status === 'processing') {
+              setStatusMsg(pollData.message || 'Processando frameworks com Hermes...')
+            } else if (pollData.status === 'completed') {
+              setResult(pollData.result || { ok: true, slug, title })
+              setStatusMsg(null)
+              setBusySlug(null)
+              await load()
+              return
+            } else if (pollData.status === 'failed') {
+              setErr(pollData.error || 'Falha no processamento da skill.')
+              setStatusMsg(null)
+              setBusySlug(null)
+              return
+            }
+          } catch (pollErr: any) {
+            console.warn('[admin-skill-api] poll status error:', pollErr)
+          }
+        }
+
+        if (attempts >= maxAttempts) {
+          setErr('Tempo limite de monitoramento excedido (15 minutos). Verifique os logs do servidor.')
+        }
+        setStatusMsg(null)
+        setBusySlug(null)
+        return
+      }
+
       setResult(j)
       await load() // refresh pra pegar skill_generated=true
     } catch (e: any) {
       setErr(e?.message || String(e))
     } finally {
       setBusySlug(null)
+      setStatusMsg(null)
     }
   }
 
@@ -219,6 +321,17 @@ export function MentorSkillsPanel() {
         <div className="kpi-card" style={{ marginBottom: 16, borderColor: 'var(--danger)', color: 'var(--danger)' }}>
           <AlertCircle size={16} style={{ verticalAlign: 'middle', marginRight: 6 }} />
           {err}
+        </div>
+      )}
+
+      {busySlug && (
+        <div className="kpi-card" style={{ marginBottom: 16, borderColor: '#3b82f6', background: 'rgba(59,130,246,0.06)' }}>
+          <h4 style={{ marginTop: 0, display: 'flex', alignItems: 'center', gap: 8, color: '#3b82f6' }}>
+            <RefreshCw size={18} className="spin" /> Processando em Segundo Plano — <code>{busySlug}</code>
+          </h4>
+          <p style={{ margin: 0, fontSize: 14 }}>
+            {statusMsg || 'Aguarde... Processamento seguro contra timeouts do Nginx e Cloudflare.'}
+          </p>
         </div>
       )}
 

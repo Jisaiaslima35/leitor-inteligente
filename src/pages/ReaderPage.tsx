@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, useCallback, Suspense } from 'react'
-import { ChevronLeft, ChevronRight, Mic, Pause, Play, Send, Sparkles, Target, Volume2, VolumeX, ZoomIn, ZoomOut, Code2, Users } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Mic, Pause, Play, Send, Sparkles, Target, Volume2, VolumeX, ZoomIn, ZoomOut, Code2, Users, List, BookOpen } from 'lucide-react'
 import type { Book } from '../domain/types'
 import type { ProgressState } from '../domain/library'
 import { getProgress } from '../domain/progress'
 import { PdfViewer } from '../components/PdfViewer'
+import { TocDrawer } from '../components/TocDrawer'
 import { ShareActions } from '../components/ShareActions'
 import { QuizModal } from '../components/QuizModal'
 import { QuizScoreBoard } from '../components/QuizScoreBoard'
@@ -182,6 +183,7 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
   }, [book, progress, userId])
 
   const [page, setPage] = useState(initial)
+  const [isTocOpen, setIsTocOpen] = useState(false)
   // Sincroniza page com initial APENAS quando o livro muda (não a cada
   // mudança de progress, senão o onTrack sobrescreve a página atual
   // com a inicial salva).
@@ -292,16 +294,29 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
 
   // Checar se o livro atual tem skill de Mentor (Modo Autor) carregada.
   // Botão "💡 Modo Mentor" só aparece se hasSkill === true.
+  // 17/09/2026 — adicionado console.log pra debugar bug do botão sumindo.
   useEffect(() => {
     let cancelled = false
     if (!book?.id) {
+      console.warn('[has-skill] book?.id vazio, setHasSkill(false)')
       setHasSkill(false)
       return
     }
-    fetch(`/${book.id}/semantic-api/has-skill?bookSlug=${encodeURIComponent(book.id)}`)
-      .then((r) => r.ok ? r.json() : { has_skill: false })
-      .then((data) => { if (!cancelled) setHasSkill(Boolean(data.has_skill)) })
-      .catch(() => { if (!cancelled) setHasSkill(false) })
+    const url = `/${book.id}/semantic-api/has-skill?bookSlug=${encodeURIComponent(book.id)}`
+    console.log('[has-skill] fetch:', url)
+    fetch(url)
+      .then((r) => {
+        console.log('[has-skill] status', r.status, r.url)
+        return r.ok ? r.json() : { has_skill: false }
+      })
+      .then((data) => {
+        console.log('[has-skill] resposta:', data, 'cancelled?', cancelled)
+        if (!cancelled) setHasSkill(Boolean(data.has_skill))
+      })
+      .catch((e) => {
+        console.error('[has-skill] FALHOU:', e)
+        if (!cancelled) setHasSkill(false)
+      })
     return () => { cancelled = true }
   }, [book?.id])
 
@@ -625,6 +640,43 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
   const minutesPerPage = 2
   const remainingPages = Math.max(0, book.totalPages - page)
   const remainingMinutes = remainingPages * minutesPerPage
+  // Breadcrumbs dinâmicos baseados no TOC estruturado em relação à página atual
+  const activeTocBreadcrumb = useMemo(() => {
+    const rawToc = book.toc
+    if (!rawToc || rawToc.length === 0) return null
+
+    let activeIndex = -1
+    for (let i = 0; i < rawToc.length; i++) {
+      const p = rawToc[i][2]
+      if (p <= page) {
+        if (activeIndex === -1 || p >= rawToc[activeIndex][2]) {
+          activeIndex = i
+        }
+      }
+    }
+
+    if (activeIndex === -1) return null
+
+    const activeItem = rawToc[activeIndex]
+    const activeLevel = activeItem[0]
+    const activeTitle = activeItem[1]
+
+    let parentTitle: string | null = null
+    if (activeLevel > 1) {
+      for (let j = activeIndex - 1; j >= 0; j--) {
+        if (rawToc[j][0] < activeLevel) {
+          parentTitle = rawToc[j][1]
+          break
+        }
+      }
+    }
+
+    return {
+      parent: parentTitle,
+      current: activeTitle,
+    }
+  }, [book.toc, page])
+
   const remainingLabel = remainingMinutes < 60
     ? `${remainingMinutes} min restantes`
     : `${Math.floor(remainingMinutes / 60)}h ${remainingMinutes % 60}min restantes`
@@ -679,9 +731,45 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
           )}
         </div>
       )}
+      {/* Breadcrumbs Dinâmicos baseados no TOC nativo */}
+      {activeTocBreadcrumb && (
+        <div
+          className="toc-breadcrumbs"
+          onClick={() => setIsTocOpen(true)}
+          title="Clique para abrir o Sumário completo"
+          role="button"
+          tabIndex={0}
+        >
+          <BookOpen size={14} className="toc-breadcrumb-icon" />
+          <span className="toc-breadcrumb-item toc-breadcrumb-book">{book.title}</span>
+          {activeTocBreadcrumb.parent && (
+            <>
+              <span className="toc-breadcrumb-sep">/</span>
+              <span className="toc-breadcrumb-item toc-breadcrumb-parent">{activeTocBreadcrumb.parent}</span>
+            </>
+          )}
+          <span className="toc-breadcrumb-sep">/</span>
+          <span className="toc-breadcrumb-item toc-breadcrumb-active">{activeTocBreadcrumb.current}</span>
+          <span className="toc-breadcrumb-page">· Pág. {page} de {book.totalPages}</span>
+        </div>
+      )}
+
       <div className="pdf-toolbar">
         {/* Fileira 1 — navegação de página (compacta em mobile) */}
         <div className="pdf-toolbar-row">
+          <button
+            type="button"
+            className="icon-btn toc-trigger-btn"
+            onClick={() => setIsTocOpen(true)}
+            title="Abrir Sumário / Índice do Livro"
+            aria-label="Abrir Sumário"
+          >
+            <List size={18} />
+            <span className="toc-btn-label">Sumário</span>
+            {book.toc && book.toc.length > 0 && (
+              <span className="toc-badge-count">{book.toc.length}</span>
+            )}
+          </button>
           <button className="icon-btn" onClick={() => handlePageChange(page - 1)} aria-label="Página anterior">
             <ChevronLeft size={18} />
           </button>
@@ -1016,6 +1104,16 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
           />
         </Suspense>
       )}
+
+      <TocDrawer
+        isOpen={isTocOpen}
+        onClose={() => setIsTocOpen(false)}
+        toc={book.toc || []}
+        currentPage={page}
+        totalPages={book.totalPages}
+        bookTitle={book.title}
+        onSelectPage={handlePageChange}
+      />
     </section>
   )
 }

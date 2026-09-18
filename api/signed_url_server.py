@@ -143,7 +143,7 @@ class Handler(BaseHTTPRequestHandler):
                 })
 
             # busca metadata no Supabase
-            ebooks = supabase_get(f'/rest/v1/ebooks?select=id,title,author,cover_url,total_pages,categoria&slug=eq.{slug}&limit=1')
+            ebooks = supabase_get(f'/rest/v1/ebooks?select=id,title,author,cover_url,total_pages,categoria,toc&slug=eq.{slug}&limit=1')
             if not ebooks:
                 return self.send_json(404, {'error': f'Livro {slug} não encontrado'})
             eb = ebooks[0]
@@ -154,6 +154,7 @@ class Handler(BaseHTTPRequestHandler):
                 'cover_url': eb.get('cover_url', ''),
                 'total_pages': eb.get('total_pages', 100),
                 'categoria': eb.get('categoria') or 'outros',
+                'toc': eb.get('toc') or [],
                 'mode': 'guest',
                 'room_alive': True,
             })
