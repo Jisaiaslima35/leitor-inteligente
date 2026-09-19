@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import io
 import json, os, re, threading, unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -86,11 +87,48 @@ def gateway_key():
 
 KEY = gateway_key()
 
-def answer(question, current_page):
+# 18/09/2026 v20: voice agent mobile — relay de transcrição pro Whisper local
+# rodando em 127.0.0.1:9903 (audio-api.service, Rádio Louvor, faster-whisper).
+# Mobile não tem window.SpeechRecognition; o front grava via MediaRecorder e
+# manda o Blob webm/mp4 pra cá. Sem estado, sem auth (rota interna).
+WHISPER_URL = 'http://127.0.0.1:9903/audio'
+WHISPER_TIMEOUT = 25  # segundos; faster-whisper ~4s típico mas pode variar
+WHISPER_MAX_AUDIO_BYTES = 8 * 1024 * 1024  # 8MB
+
+def answer(question, current_page, is_voice=False, modo_mentor=False):
     sources=retrieve(question,current_page)
     context='\n\n'.join(f'[FONTE: {s["title"]}, PDF página {s["page"]}]\n{s["text"]}' for s in sources)
-    system='''Você é o Professor IA do livro O Poder do Hábito, de Charles Duhigg. Responda em português do Brasil, de forma didática e fiel ao livro. Use SOMENTE o contexto fornecido para explicar conteúdo da obra. Se a pergunta mencionar uma página ou capítulo, responda especificamente sobre ele. Não substitua a resposta por dicas genéricas sobre deixa/rotina/recompensa. Cite no fim as páginas PDF usadas. Se o contexto não contiver a resposta, diga claramente que não encontrou naquele conteúdo. Sobre metadados básicos, saiba: título O Poder do Hábito; autor Charles Duhigg; tradução Rafael Mantovani; edição brasileira Objetiva, 2012.'''
-    payload=json.dumps({'model':'hermes-agent','messages':[{'role':'system','content':system},{'role':'user','content':f'Pergunta do leitor: {question}\nPágina atual no leitor: {current_page}\n\nCONTEXTO DO LIVRO:\n{context}'}],'temperature':0.2,'max_tokens':900}).encode()
+    if is_voice:
+        if modo_mentor:
+            system = (
+                "Você é o Mentor Socrático do livro O Poder do Hábito, conversando exclusivamente por VOZ em tempo real. "
+                "REGRAS RÍGIDAS DE CONVERSAÇÃO (OBRIGATÓRIO):\n"
+                "1. LIMITE ABSOLUTO: Responda em NO MÁXIMO 2 frases curtas (MÁXIMO DE 30 PALAVRAS NO TOTAL).\n"
+                "2. ZERO METADADOS: JAMAIS cite ficha técnica, tradutor, editora, ano ou páginas.\n"
+                "3. Conclua SEMPRE com 1 pergunta curta provocando reflexão ou ação prática."
+            )
+        else:
+            system = (
+                "Você é o Professor IA do livro O Poder do Hábito, conversando exclusivamente por VOZ em tempo real. "
+                "REGRAS RÍGIDAS DE CONVERSAÇÃO (OBRIGATÓRIO):\n"
+                "1. LIMITE ABSOLUTO: Responda em NO MÁXIMO 2 frases curtas e simples (MÁXIMO DE 30 PALAVRAS NO TOTAL).\n"
+                "2. ZERO METADADOS: JAMAIS cite editora, tradutor, ano ou listas de capítulos.\n"
+                "3. Explique a ideia central em 1 frase e valide o entendimento em outra frase curta."
+            )
+        tokens_limit = 100
+    else:
+        system='''Você é o Professor IA do livro O Poder do Hábito, de Charles Duhigg. Responda em português do Brasil, de forma didática e fiel ao livro. Use SOMENTE o contexto fornecido para explicar conteúdo da obra. Se a pergunta mencionar uma página ou capítulo, responda especificamente sobre ele. Não substitua a resposta por dicas genéricas sobre deixa/rotina/recompensa. Cite no fim as páginas PDF usadas. Se o contexto não contiver a resposta, diga claramente que não encontrou naquele conteúdo.'''
+        tokens_limit = 900
+
+    payload=json.dumps({
+        'model':'hermes-agent',
+        'messages':[
+            {'role':'system','content':system},
+            {'role':'user','content':f'Pergunta do leitor: {question}\nPágina atual no leitor: {current_page}\n\nCONTEXTO DO LIVRO:\n{context}'}
+        ],
+        'temperature':0.2,
+        'max_tokens':tokens_limit
+    }).encode()
     req=Request('http://127.0.0.1:8642/v1/chat/completions',data=payload,headers={'Content-Type':'application/json','Authorization':f'Bearer {KEY}'},method='POST')
     with urlopen(req,timeout=120) as r:
         data=json.loads(r.read())
@@ -107,12 +145,136 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path=='/health': self.send_json(200,{'status':'ok','pages':len(PAGES),'chapters':len(CHAPTERS)})
         else: self.send_json(404,{'error':'not found'})
+
+    def _extract_multipart_audio(self, body: bytes, boundary: bytes) -> bytes | None:
+        """Extrai o conteúdo do campo 'audio' do multipart/form-data.
+
+        Espelha o parser do audio-api.service (127.0.0.1:9903) — formato
+        canonical: --boundary\r\nContent-Disposition: form-data; name="audio"\r\n\r\n
+        <bytes>\r\n--boundary--\r\n
+        """
+        sep = b'--' + boundary
+        for part in body.split(sep):
+            if b'name="audio"' not in part:
+                continue
+            idx = part.find(b'\r\n\r\n')
+            if idx == -1:
+                continue
+            content = part[idx + 4:]
+            if content.endswith(b'\r\n'):
+                content = content[:-2]
+            return content
+        return None
+
+    def _handle_transcribe(self):
+        """Relay multipart → 127.0.0.1:9903/audio (faster-whisper).
+
+        Espera multipart/form-data com campo 'audio'. Devolve {text} ou
+        {text:'', empty:true} se Whisper não detectou fala.
+        """
+        try:
+            ctype = self.headers.get('Content-Type', '')
+            if 'multipart/form-data' not in ctype:
+                return self.send_json(400, {'error': 'Content-Type deve ser multipart/form-data'})
+
+            # Boundary: aceita com ou sem aspas em torno do valor
+            try:
+                boundary_raw = ctype.split('boundary=')[1].split(';')[0].strip()
+                if boundary_raw.startswith('"') and boundary_raw.endswith('"'):
+                    boundary_raw = boundary_raw[1:-1]
+                boundary = boundary_raw.encode()
+            except (IndexError, ValueError):
+                return self.send_json(400, {'error': 'boundary ausente no Content-Type'})
+
+            n = int(self.headers.get('Content-Length', '0'))
+            if n <= 0:
+                return self.send_json(400, {'error': 'body vazio'})
+            if n > WHISPER_MAX_AUDIO_BYTES:
+                return self.send_json(413, {'error': f'audio > {WHISPER_MAX_AUDIO_BYTES // (1024*1024)}MB'})
+
+            body = self.rfile.read(n)
+            audio_bytes = self._extract_multipart_audio(body, boundary)
+            if not audio_bytes:
+                return self.send_json(400, {'error': 'campo "audio" ausente no multipart'})
+
+            # Repassa pro Whisper local — reconstrói multipart novo (boundary limpo)
+            mp = io.BytesIO()
+            mp.write(b'--XCLDWHISPER\r\n')
+            mp.write(b'Content-Disposition: form-data; name="audio"\r\n')
+            mp.write(b'Content-Type: application/octet-stream\r\n\r\n')
+            mp.write(audio_bytes)
+            mp.write(b'\r\n--XCLDWHISPER--\r\n')
+
+            req = Request(
+                WHISPER_URL,
+                data=mp.getvalue(),
+                headers={'Content-Type': 'multipart/form-data; boundary=XCLDWHISPER'},
+                method='POST',
+            )
+            try:
+                with urlopen(req, timeout=WHISPER_TIMEOUT) as r:
+                    whisper_resp = json.loads(r.read())
+            except Exception as we:
+                return self.send_json(504, {'error': f'whisper timeout/erro: {str(we)[:180]}'})
+
+            transcricao = (whisper_resp.get('transcricao') or '').strip()
+            if not transcricao or transcricao == '(áudio sem fala detectada)':
+                return self.send_json(200, {'text': '', 'empty': True})
+
+            return self.send_json(200, {'text': transcricao})
+        except Exception as e:
+            return self.send_json(500, {'error': f'transcribe falhou: {str(e)[:200]}'})
+
     def do_POST(self):
-        if self.path!='/ask': return self.send_json(404,{'error':'not found'})
+        if self.path in ('/voice/session/start', '/api/voice/session/start'):
+            try:
+                from voice_session import start_voice_session
+                n = int(self.headers.get('Content-Length', '0'))
+                data = json.loads(self.rfile.read(n)) if n > 0 else {}
+                ebook_id = str(data.get('ebook_id') or data.get('book_id') or data.get('slug') or '').strip()
+                if not ebook_id:
+                    return self.send_json(400, {'error': 'ebook_id obrigatório'})
+                origin = self.headers.get('Origin', 'https://leitorinteligente.automacaojs.us')
+                res = start_voice_session(ebook_id, origin)
+                return self.send_json(200, res)
+            except ValueError as ve:
+                return self.send_json(404, {'error': str(ve)})
+            except Exception as e:
+                return self.send_json(500, {'error': str(e)[:500]})
+
+        if self.path in ('/voice/query', '/api/voice/query'):
+            try:
+                from voice_session import answer_voice_query
+                n = int(self.headers.get('Content-Length', '0'))
+                data = json.loads(self.rfile.read(n)) if n > 0 else {}
+                q = str(data.get('question', '')).strip()
+                ebook_id = str(data.get('ebook_id') or data.get('book_id') or data.get('bookId') or data.get('slug') or '').strip()
+                if not q:
+                    return self.send_json(400, {'error': 'Pergunta vazia'})
+                if not ebook_id:
+                    return self.send_json(400, {'error': 'ebook_id obrigatório'})
+                modo_mentor = data.get('modoMentor')
+                res = answer_voice_query(q, ebook_id, modo_mentor=modo_mentor)
+                return self.send_json(200, res)
+            except ValueError as ve:
+                return self.send_json(404, {'error': str(ve)})
+            except Exception as e:
+                return self.send_json(500, {'error': str(e)[:500]})
+
+        if self.path in ('/voice/transcribe', '/api/voice/transcribe'):
+            return self._handle_transcribe()
+
+        if self.path != '/ask': return self.send_json(404, {'error': 'not found'})
         try:
             n=int(self.headers.get('Content-Length','0')); data=json.loads(self.rfile.read(n)); q=str(data.get('question','')).strip(); p=int(data.get('currentPage',1))
+            ebook_id = str(data.get('ebook_id') or data.get('book_id') or data.get('bookId') or data.get('slug') or '').strip()
+            is_voice = bool(data.get('is_voice') or data.get('isVoice') or data.get('modoMentor') is not None)
+            modo_mentor = bool(data.get('modoMentor', False))
             if not q: return self.send_json(400,{'error':'Pergunta vazia'})
-            self.send_json(200,answer(q,p))
+            if is_voice and ebook_id:
+                from voice_session import answer_voice_query
+                return self.send_json(200, answer_voice_query(q, ebook_id, modo_mentor=modo_mentor))
+            self.send_json(200,answer(q,p,is_voice=is_voice,modo_mentor=modo_mentor))
         except Exception as e:
             self.send_json(500,{'error':str(e)[:500]})
 
