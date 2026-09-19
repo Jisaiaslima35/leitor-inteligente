@@ -225,6 +225,20 @@ export function VoiceMentorSection({ books, defaultBookId, onNavigate }: Props) 
   // Lâmina ativa do Mini-Degustador (0: Capa, 1: TOC, 2: Insight, 3: Paywall)
   const [currentSlide, setCurrentSlide] = useState<number>(0)
 
+  // 18/09/2026 v20: viewport mobile para layout responsivo (≤768px = coluna única)
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return window.matchMedia('(max-width: 768px)').matches
+  })
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const mq = window.matchMedia('(max-width: 768px)')
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+
   // Ao trocar o livro, reseta para a Lâmina 1 (Capa)
   useEffect(() => {
     setCurrentSlide(0)
@@ -911,16 +925,17 @@ export function VoiceMentorSection({ books, defaultBookId, onNavigate }: Props) 
   return (
     <div
       style={{
-        marginTop: 50,
-        marginBottom: 40,
-        padding: '32px 28px',
-        borderRadius: 24,
+        marginTop: isMobile ? 24 : 50,
+        marginBottom: isMobile ? 20 : 40,
+        padding: isMobile ? '18px 14px' : '32px 28px',
+        borderRadius: isMobile ? 18 : 24,
         background: 'linear-gradient(145deg, rgba(26, 38, 35, 0.96) 0%, rgba(15, 23, 21, 0.98) 100%)',
         boxShadow: '0 24px 48px -12px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
         border: isMentor ? '1px solid rgba(217, 119, 6, 0.35)' : '1px solid rgba(79, 70, 229, 0.35)',
         color: '#f7f4ed',
         position: 'relative',
         overflow: 'hidden',
+        boxSizing: 'border-box',
       }}
     >
       {/* Luz ambiente de fundo */}
@@ -984,7 +999,7 @@ export function VoiceMentorSection({ books, defaultBookId, onNavigate }: Props) 
         </div>
 
         {/* Dropdown com Capas */}
-        <div style={{ minWidth: 260 }}>
+        <div style={{ minWidth: 0, width: '100%', maxWidth: isMobile ? '100%' : 320 }}>
           <label
             htmlFor="voice-book-selector"
             style={{ display: 'block', fontSize: '0.78rem', color: '#9ca3af', marginBottom: 6, fontWeight: 600 }}
@@ -1038,8 +1053,8 @@ export function VoiceMentorSection({ books, defaultBookId, onNavigate }: Props) 
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'minmax(270px, 320px) 1fr',
-          gap: 28,
+          gridTemplateColumns: isMobile ? '1fr' : 'minmax(270px, 320px) 1fr',
+          gap: isMobile ? 16 : 28,
           alignItems: 'stretch',
         }}
       >
@@ -1049,15 +1064,19 @@ export function VoiceMentorSection({ books, defaultBookId, onNavigate }: Props) 
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'space-between',
-            padding: '18px 16px',
-            borderRadius: 20,
+            padding: isMobile ? '14px 12px' : '18px 16px',
+            borderRadius: isMobile ? 16 : 20,
             background: 'rgba(0, 0, 0, 0.32)',
             border: '1px solid rgba(255, 255, 255, 0.08)',
             backdropFilter: 'blur(12px)',
             boxShadow: '0 16px 36px rgba(0, 0, 0, 0.28)',
-            minHeight: 410,
+            minHeight: isMobile ? 0 : 410,
             position: 'relative',
             overflow: 'hidden',
+            width: '100%',
+            maxWidth: isMobile ? 360 : 'none',
+            margin: isMobile ? '0 auto' : 0,
+            boxSizing: 'border-box',
           }}
         >
           {/* Topo do Card: Badge da Lâmina + Indicador */}
@@ -1579,8 +1598,10 @@ export function VoiceMentorSection({ books, defaultBookId, onNavigate }: Props) 
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            minHeight: 280,
+            minHeight: isMobile ? 220 : 280,
             position: 'relative',
+            width: '100%',
+            minWidth: 0, // permite encolher abaixo do conteúdo intrínseco
           }}
         >
           {/* Status Badge */}
@@ -1634,8 +1655,8 @@ export function VoiceMentorSection({ books, defaultBookId, onNavigate }: Props) 
               }
             }}
             style={{
-              width: 120,
-              height: 120,
+              width: isMobile ? 104 : 120,
+              height: isMobile ? 104 : 120,
               borderRadius: '50%',
               display: 'flex',
               alignItems: 'center',
@@ -1687,15 +1708,16 @@ export function VoiceMentorSection({ books, defaultBookId, onNavigate }: Props) 
             style={{
               marginTop: 24,
               width: '100%',
-              maxWidth: 540,
+              maxWidth: isMobile ? '100%' : 540,
               minHeight: 52,
               padding: '12px 18px',
               borderRadius: 14,
               background: 'rgba(0, 0, 0, 0.35)',
               border: '1px solid rgba(255, 255, 255, 0.08)',
-              fontSize: '0.88rem',
+              fontSize: isMobile ? '0.82rem' : '0.88rem',
               lineHeight: '1.45',
               color: '#e5e7eb',
+              boxSizing: 'border-box',
               textAlign: 'center',
             }}
           >
@@ -1815,7 +1837,8 @@ export function VoiceMentorSection({ books, defaultBookId, onNavigate }: Props) 
                 display: 'flex',
                 gap: 8,
                 width: '100%',
-                maxWidth: 440,
+                maxWidth: isMobile ? '100%' : 440,
+                minWidth: 0,
               }}
             >
               <input
