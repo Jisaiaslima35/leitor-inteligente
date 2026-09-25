@@ -178,6 +178,7 @@ export async function loadEbookBySlug(slug: string): Promise<{
   owner_user_id: string | null
   categoria: string | null
   toc?: [number, string, number][]
+  format?: 'pdf' | 'epub' | 'mobi'
 } | null> {
   if (!SUPABASE_READY) return null
   const { data, error } = await supabase
@@ -186,6 +187,7 @@ export async function loadEbookBySlug(slug: string): Promise<{
     .eq('slug', slug)
     .maybeSingle()
   if (error || !data) return null
+  const isEpub = Boolean(data.pdf_storage_path?.toLowerCase().endsWith('.epub'))
   return {
     ebook_id: data.id,
     slug: data.slug,
@@ -197,5 +199,6 @@ export async function loadEbookBySlug(slug: string): Promise<{
     owner_user_id: data.owner_user_id,
     categoria: data.categoria ?? null,
     toc: (data.toc as [number, string, number][]) || [],
+    format: isEpub ? 'epub' : 'pdf',
   }
 }

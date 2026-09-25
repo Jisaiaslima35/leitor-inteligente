@@ -143,10 +143,12 @@ class Handler(BaseHTTPRequestHandler):
                 })
 
             # busca metadata no Supabase
-            ebooks = supabase_get(f'/rest/v1/ebooks?select=id,title,author,cover_url,total_pages,categoria,toc&slug=eq.{slug}&limit=1')
+            ebooks = supabase_get(f'/rest/v1/ebooks?select=id,title,author,cover_url,total_pages,categoria,toc,pdf_storage_path&slug=eq.{slug}&limit=1')
             if not ebooks:
                 return self.send_json(404, {'error': f'Livro {slug} não encontrado'})
             eb = ebooks[0]
+            path = eb.get('pdf_storage_path') or ''
+            fmt = 'epub' if path.lower().endswith('.epub') else 'pdf'
             self.send_json(200, {
                 'id': slug,
                 'title': eb.get('title', ''),
@@ -155,6 +157,8 @@ class Handler(BaseHTTPRequestHandler):
                 'total_pages': eb.get('total_pages', 100),
                 'categoria': eb.get('categoria') or 'outros',
                 'toc': eb.get('toc') or [],
+                'format': fmt,
+                'pdf_storage_path': path,
                 'mode': 'guest',
                 'room_alive': True,
             })
@@ -201,8 +205,10 @@ class Handler(BaseHTTPRequestHandler):
             if not signed_url:
                 return self.send_json(500, {'error': 'Falha ao gerar signed URL'})
 
+            fmt = 'epub' if storage_path.lower().endswith('.epub') else 'pdf'
             self.send_json(200, {
                 'url': signed_url,
+                'format': fmt,
                 'expiresIn': URL_TTL_SECONDS,
                 'expiresAt': int(time.time()) + URL_TTL_SECONDS,
             })
@@ -261,8 +267,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(500, {'error': 'Falha ao gerar signed URL'})
                 full = f'{SUPABASE_URL}/storage/v1{signed}'
 
+            fmt = 'epub' if storage_path.lower().endswith('.epub') else 'pdf'
             self.send_json(200, {
                 'url': full,
+                'format': fmt,
                 'expiresIn': GUEST_URL_TTL,
                 'expiresAt': int(time.time()) + GUEST_URL_TTL,
                 'mode': 'guest',

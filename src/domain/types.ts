@@ -55,6 +55,10 @@ export interface Book {
   hookAbertura?: string
   /** Prompt customizado com diretrizes de mentoria para a obra. */
   promptMentor?: string
+  /** Formato do e-book: 'pdf' | 'epub' | 'mobi'. */
+  format?: 'pdf' | 'epub' | 'mobi'
+  /** Caminho no storage do Supabase. */
+  pdfStoragePath?: string
   /** Voz configurada no sintetizador (MiniMax / edge-tts). */
   vozId?: string
 }

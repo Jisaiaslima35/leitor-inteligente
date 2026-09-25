@@ -533,13 +533,77 @@ def extract_toc(pdf_path: str, pages: list[dict] = None) -> list[list]:
 
 
 # --- Jobs em background ---
+def convert_mobi_to_epub(mobi_path: str, output_epub_path: str, title: str = "Livro", author: str = "Autor") -> str:
+    """Converte arquivo .mobi para .epub usando mobi e ebooklib."""
+    import mobi
+    from ebooklib import epub
+    import tempfile, shutil
+
+    tempdir = None
+    try:
+        tempdir, extracted_path = mobi.extract(mobi_path)
+        if extracted_path.lower().endswith('.epub') and os.path.exists(extracted_path):
+            shutil.copyfile(extracted_path, output_epub_path)
+            print(f'[mobi-convert] KF8/MOBI8 convertido com sucesso para EPUB: {output_epub_path}', flush=True)
+            return output_epub_path
+        elif extracted_path.lower().endswith('.html') and os.path.exists(extracted_path):
+            print(f'[mobi-convert] MOBI7 HTML detectado, gerando EPUB via ebooklib...', flush=True)
+            book = epub.EpubBook()
+            book.set_identifier(str(uuid.uuid4()))
+            book.set_title(title or "Livro")
+            book.set_language('pt')
+            book.add_author(author or "Desconhecido")
+
+            with open(extracted_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+
+            c1 = epub.EpubHtml(title=title or 'Início', file_name='chap_1.xhtml', lang='pt')
+            c1.content = content
+            book.add_item(c1)
+
+            html_dir = os.path.dirname(extracted_path)
+            if os.path.exists(html_dir):
+                for fname in os.listdir(html_dir):
+                    fpath = os.path.join(html_dir, fname)
+                    if os.path.isfile(fpath):
+                        ext = os.path.splitext(fname)[1].lower()
+                        if ext in ('.jpg', '.jpeg', '.png', '.gif'):
+                            try:
+                                with open(fpath, 'rb') as img_f:
+                                    img_item = epub.EpubItem(
+                                        uid=fname,
+                                        file_name=f'images/{fname}',
+                                        media_type=f'image/{ext[1:]}',
+                                        content=img_f.read()
+                                    )
+                                    book.add_item(img_item)
+                            except Exception as e_img:
+                                print(f'[mobi-convert] aviso ao adicionar imagem {fname}: {e_img}', flush=True)
+
+            book.toc = (epub.Link('chap_1.xhtml', title or 'Início', 'intro'), (epub.Section('Capítulos'), [c1]))
+            book.add_item(epub.EpubNcx())
+            book.add_item(epub.EpubNav())
+            book.spine = ['nav', c1]
+            epub.write_epub(output_epub_path, book)
+            print(f'[mobi-convert] MOBI7 convertido com sucesso para EPUB: {output_epub_path}', flush=True)
+            return output_epub_path
+        else:
+            raise RuntimeError(f"Formato inesperado extraído de {mobi_path}: {extracted_path}")
+    finally:
+        if tempdir and os.path.exists(tempdir):
+            shutil.rmtree(tempdir, ignore_errors=True)
+
+
 def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, author: str, total_pages: int, tenant_id: str = None):
-    """Job async: processa PDF, gera embeddings, salva tudo."""
+    """Job async: processa PDF, EPUB ou MOBI, gera embeddings, salva tudo."""
     tmp_dir = f'/tmp/upload-{user_id}-{int(time.time())}'
     os.makedirs(tmp_dir, exist_ok=True)
-    raw_pdf = f'{tmp_dir}/raw.pdf'
+    raw_ext = Path(storage_path).suffix.lower()
+    if raw_ext not in ('.pdf', '.epub', '.mobi'):
+        raw_ext = '.pdf'
+    raw_downloaded = f'{tmp_dir}/raw{raw_ext}'
     ocr_pdf = f'{tmp_dir}/ocr.pdf'
-    final_pdf_local = f'{tmp_dir}/final.pdf'
+    final_file_local = f'{tmp_dir}/final{raw_ext}'
 
     try:
         t0 = time.time()
@@ -559,67 +623,98 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
         download_url = f'{SUPABASE_URL}/storage/v1{signed_path}'
         dl_req = Request(download_url)
         with urlopen(dl_req, timeout=120) as r:
-            with open(raw_pdf, 'wb') as f:
+            with open(raw_downloaded, 'wb') as f:
                 f.write(r.read())
 
-        # 2. Detecta OCR
-        is_scanned = detect_scanned(raw_pdf)
-        process_pdf = ocr_pdf if is_scanned else raw_pdf
-        if is_scanned:
-            print(f'[upload-job] PDF escaneado, rodando OCR...', flush=True)
-            if not run_ocr(raw_pdf, ocr_pdf):
-                print(f'[upload-job] OCR falhou, usando original', flush=True)
-                process_pdf = raw_pdf
-        print(f'[upload-job] PDF lido em {time.time()-t0:.1f}s (escaneado={is_scanned})', flush=True)
+        is_mobi = raw_ext == '.mobi'
+        is_epub = raw_ext == '.epub' or is_mobi
 
-        # 2b. Extrai contagem REAL de páginas via pdfinfo (sobrescreve total_pages do frontend)
-        real_pages = get_real_page_count(process_pdf)
-        if real_pages > 0:
-            old_total = total_pages
-            total_pages = real_pages
-            print(f'[upload-job] total_pages real via pdfinfo: {real_pages} (frontend disse {old_total})', flush=True)
+        if is_mobi:
+            print(f'[upload-job] MOBI recebido. Convertendo para EPUB...', flush=True)
+            converted_epub = f'{tmp_dir}/converted.epub'
+            convert_mobi_to_epub(raw_downloaded, converted_epub, title=title, author=author)
+            process_file = converted_epub
+        elif is_epub:
+            print(f'[upload-job] EPUB recebido. Processando nativamente...', flush=True)
+            process_file = raw_downloaded
         else:
-            print(f'[upload-job] pdfinfo falhou, mantendo total_pages do frontend: {total_pages}', flush=True)
+            is_scanned = detect_scanned(raw_downloaded)
+            process_file = ocr_pdf if is_scanned else raw_downloaded
+            if is_scanned:
+                print(f'[upload-job] PDF escaneado, rodando OCR...', flush=True)
+                if not run_ocr(raw_downloaded, ocr_pdf):
+                    print(f'[upload-job] OCR falhou, usando original', flush=True)
+                    process_file = raw_downloaded
+            print(f'[upload-job] PDF lido em {time.time()-t0:.1f}s (escaneado={is_scanned})', flush=True)
 
-        # 3. Extrai páginas (pipeline híbrido: pdftotext → Tesseract → marker-pdf)
-        pages = extract_pages_with_fallback(process_pdf)
-        if not pages:
-            raise RuntimeError('PDF sem texto extraível (mesmo após Tesseract + marker-pdf fallback)')
-        print(f'[upload-job] {len(pages)} páginas extraídas', flush=True)
+        if is_epub:
+            doc = pymupdf.open(process_file)
+            real_pages = len(doc)
+            pages = []
+            for i, p in enumerate(doc, 1):
+                txt = p.get_text().strip()
+                if txt:
+                    pages.append({'page': i, 'text': txt})
+            if not pages:
+                pages = extract_pages_with_fallback(process_file)
+            total_pages = len(pages) or real_pages or 1
+            print(f'[upload-job] EPUB {total_pages} páginas extraídas em {time.time()-t0:.1f}s', flush=True)
+            toc = doc.get_toc()
+            if not toc:
+                toc = extract_toc(process_file, pages)
+            chapters = detect_chapters(pages)
+            doc.close()
 
-        # 4. Detecta capítulos
-        chapters = detect_chapters(pages)
-        # 4b. Extrai TOC estruturado (PyMuPDF doc.get_toc + fallback)
-        toc = extract_toc(process_pdf, pages)
-        print(f'[upload-job] TOC extraído: {len(toc)} marcadores encontrados', flush=True)
+            final_file_local = f'{tmp_dir}/final.epub'
+            shutil.copy(process_file, final_file_local)
+            final_storage_path = f'{user_id}/{ebook_id}/livro.epub'
+            content_type = 'application/epub+zip'
+        else:
+            real_pages = get_real_page_count(process_file)
+            if real_pages > 0:
+                old_total = total_pages
+                total_pages = real_pages
+                print(f'[upload-job] total_pages real via pdfinfo: {real_pages} (frontend disse {old_total})', flush=True)
+            else:
+                print(f'[upload-job] pdfinfo falhou, mantendo total_pages do frontend: {total_pages}', flush=True)
 
-        # 5. Salva PDF final no path do ebook (depois do upload original pra signed URL funcionar após)
-        import shutil
-        shutil.copy(process_pdf, final_pdf_local)
-        final_storage_path = f'{user_id}/{ebook_id}/livro.pdf'
-        with open(final_pdf_local, 'rb') as f:
-            pdf_bytes = f.read()
+            pages = extract_pages_with_fallback(process_file)
+            if not pages:
+                raise RuntimeError('PDF sem texto extraível (mesmo após Tesseract + marker-pdf fallback)')
+            print(f'[upload-job] {len(pages)} páginas extraídas', flush=True)
+
+            chapters = detect_chapters(pages)
+            toc = extract_toc(process_file, pages)
+            print(f'[upload-job] TOC extraído: {len(toc)} marcadores encontrados', flush=True)
+
+            final_file_local = f'{tmp_dir}/final.pdf'
+            shutil.copy(process_file, final_file_local)
+            final_storage_path = f'{user_id}/{ebook_id}/livro.pdf'
+            content_type = 'application/pdf'
+
+        # 5. Salva arquivo final no bucket ebooks
+        with open(final_file_local, 'rb') as f:
+            file_bytes = f.read()
         upload_req = Request(
             f'{SUPABASE_URL}/storage/v1/object/ebooks/{final_storage_path}',
-            data=pdf_bytes,
+            data=file_bytes,
             headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
-                     'Content-Type': 'application/pdf', 'x-upsert': 'true',
-                     'Content-Length': str(len(pdf_bytes))},
+                     'Content-Type': content_type, 'x-upsert': 'true',
+                     'Content-Length': str(len(file_bytes))},
             method='POST'
         )
         try:
             with urlopen(upload_req, timeout=120) as r:
-                # Some buckets return JSON; others return empty. Either way: 2xx = ok
-                print(f'[upload-job] PDF final armazenado em {final_storage_path}', flush=True)
+                print(f'[upload-job] Arquivo final armazenado em {final_storage_path} ({content_type})', flush=True)
         except HTTPError as e:
             body = e.read().decode('utf-8', errors='ignore')[:300]
-            print(f'[upload-job] ERRO upload PDF final HTTP {e.code}: {body}', flush=True)
+            print(f'[upload-job] ERRO upload arquivo final HTTP {e.code}: {body}', flush=True)
             raise
         except Exception as e:
-            print(f'[upload-job] ERRO upload PDF final: {e}', flush=True)
+            print(f'[upload-job] ERRO upload arquivo final: {e}', flush=True)
             raise
 
-        # 5b. UPDATE ebooks.pdf_storage_path no banco → reader/signed-url sabe o path novo
+        # 5b. UPDATE ebooks.pdf_storage_path no banco
         upd_path_req = Request(
             f'{SUPABASE_URL}/rest/v1/ebooks?id=eq.{ebook_id}',
             data=json.dumps({'pdf_storage_path': final_storage_path}).encode(),
@@ -712,7 +807,7 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
         try:
             from cover_extractor import extract_cover as _extract_cover
             cover_local = f'{tmp_dir}/cover.jpg'
-            extracted = _extract_cover(final_pdf_local, cover_local, max_pages=5)
+            extracted = _extract_cover(final_file_local, cover_local, max_pages=5)
             if extracted and os.path.exists(extracted):
                 cover_storage_path = f'{ebook_id}/cover.jpg'  # sem user_id — capa é pública
                 cover_bucket = 'book-covers'  # bucket público
@@ -901,9 +996,11 @@ class Handler(BaseHTTPRequestHandler):
                 # Normaliza NFKD (decompõe acentos) → remove combining marks → só ASCII
                 filename = _ud.normalize('NFKD', filename).encode('ascii', 'ignore').decode('ascii')
                 filename = _re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
-                if not filename.endswith('.pdf'):
-                    filename += '.pdf'
-                filename = filename[:80]  # limite do Storage
+                raw_ext = Path(filename).suffix.lower()
+                if raw_ext not in ('.pdf', '.epub', '.mobi'):
+                    raw_ext = '.pdf'
+                base_stem = Path(filename).stem[:60]
+                filename = f"{base_stem}{raw_ext}"
                 # Path isolado por user: {user_id}/tmp/{ts}_{filename}
                 ts = int(time.time())
                 storage_path = f'{user_id}/tmp/{ts}_{filename}'

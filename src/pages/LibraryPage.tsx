@@ -250,7 +250,7 @@ export function LibraryPage({ progress, onNavigate }: Props) {
         xhr.onload = () => (xhr.status >= 200 && xhr.status < 300) ? resolve(true) : reject(new Error(`Erro HTTP ${xhr.status} no upload`))
         xhr.onerror = () => reject(new Error('Falha de conexão no upload do arquivo'))
         xhr.open('PUT', upload_url)
-        xhr.setRequestHeader('Content-Type', 'application/pdf')
+        xhr.setRequestHeader('Content-Type', uploadFile.type || 'application/octet-stream')
         xhr.send(uploadFile)
       })
 
@@ -508,15 +508,15 @@ export function LibraryPage({ progress, onNavigate }: Props) {
 
           <form onSubmit={submitInstitutionalUpload} style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: 16 }}>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <small style={{ fontWeight: 600 }}>PDF do livro</small>
+              <small style={{ fontWeight: 600 }}>Arquivo do livro (.pdf, .epub, .mobi)</small>
               <input
                 type="file"
-                accept="application/pdf"
+                accept=".pdf,.epub,.mobi,application/pdf,application/epub+zip"
                 onChange={(e) => {
                   const f = e.target.files?.[0] || null
                   setUploadFile(f)
                   if (f && !uploadTitle) {
-                    const cleanName = f.name.replace(/\.pdf$/i, '').trim()
+                    const cleanName = f.name.replace(/\.(pdf|epub|mobi)$/i, '').trim()
                     setUploadTitle(cleanName)
                     setUploadSlug(cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60))
                   }

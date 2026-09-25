@@ -243,7 +243,7 @@ function InnerApp() {
     setLoadedAsGuest(false)
     if (!bookId) return
 
-    const applyMeta = (meta: { id?: string; slug?: string; ebook_id?: string; title?: string; author?: string; cover_url?: string; categoria?: string; total_pages?: number; toc?: [number, string, number][] }) => {
+    const applyMeta = (meta: { id?: string; slug?: string; ebook_id?: string; title?: string; author?: string; cover_url?: string; categoria?: string; total_pages?: number; toc?: [number, string, number][]; format?: 'pdf' | 'epub' | 'mobi'; pdf_storage_path?: string | null }) => {
       const CATEGORIAS_VALIDAS = new Set(['programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros', 'comum'])
       const cat: Categoria = meta.categoria && CATEGORIAS_VALIDAS.has(meta.categoria)
         ? (meta.categoria as Categoria)
@@ -258,6 +258,8 @@ function InnerApp() {
       //   3. meta.ebook_id (uuid, só pra emergencies)
       //   4. bookId        (fallback do hash router)
       const slug = meta.slug || meta.id || meta.ebook_id || bookId
+      const format: 'pdf' | 'epub' | 'mobi' =
+        meta.format || (meta.pdf_storage_path?.toLowerCase().endsWith('.epub') ? 'epub' : 'pdf')
       setDynamicBook({
         id: slug,
         title: meta.title || bookId,
@@ -270,6 +272,8 @@ function InnerApp() {
         chunks: [],
         categoria: cat,
         toc: (meta.toc as [number, string, number][]) || [],
+        format,
+        pdfStoragePath: meta.pdf_storage_path || undefined,
       })
     }
 

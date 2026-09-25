@@ -128,8 +128,10 @@ export function UploadPage({ onBack, onSuccess }: Props) {
 
   // Conta páginas do PDF via arraybuffer (mesma lógica do código original)
   const handleFile = async (f: File) => {
-    if (!f.name.toLowerCase().endsWith('.pdf')) {
-      setErrorMsg('Apenas PDFs são aceitos')
+    const lowerName = f.name.toLowerCase()
+    const validExts = ['.pdf', '.epub', '.mobi']
+    if (!validExts.some((ext) => lowerName.endsWith(ext))) {
+      setErrorMsg('Formatos suportados: .pdf, .epub e .mobi')
       return
     }
     if (f.size > 50 * 1024 * 1024) {
@@ -138,6 +140,13 @@ export function UploadPage({ onBack, onSuccess }: Props) {
     }
     setFile(f)
     setErrorMsg(null)
+    if (!lowerName.endsWith('.pdf')) {
+      const cleanName = f.name.replace(/\.(pdf|epub|mobi)$/i, '').trim()
+      setTitle(cleanName)
+      setAuthor('Desconhecido')
+      setPdfPageCount(100)
+      return
+    }
     try {
       const buf = await f.arrayBuffer()
       const view = new Uint8Array(buf)
@@ -214,7 +223,7 @@ export function UploadPage({ onBack, onSuccess }: Props) {
         xhr.onload = () => resolve({ ok: xhr.status >= 200 && xhr.status < 300 })
         xhr.onerror = () => reject(new Error('Falha no upload'))
         xhr.open('PUT', upload_url)
-        xhr.setRequestHeader('Content-Type', 'application/pdf')
+        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream')
         xhr.send(file)
       })
       if (!putOk.ok) throw new Error(`Upload falhou: HTTP ${xhr.status}`)
@@ -223,7 +232,7 @@ export function UploadPage({ onBack, onSuccess }: Props) {
       setStatus('processing')
 
       // 3. Dispara processamento
-      const finalTitle = title.trim() || file.name.replace('.pdf', '')
+      const finalTitle = title.trim() || file.name.replace(/\.(pdf|epub|mobi)$/i, '')
       const finalAuthor = author.trim() || 'Desconhecido'
       const finalDescription = description.trim().slice(0, 280)  // limite suave
       const procRes = await fetch(`${import.meta.env.BASE_URL}upload-api/process`, {
@@ -342,7 +351,7 @@ export function UploadPage({ onBack, onSuccess }: Props) {
               <label className="upload-drop">
                 <input
                   type="file"
-                  accept="application/pdf"
+                  accept=".pdf,.epub,.mobi,application/pdf,application/epub+zip"
                   onChange={(e) => e.target.files && handleFile(e.target.files[0])}
                   style={{ display: 'none' }}
                 />
@@ -350,14 +359,14 @@ export function UploadPage({ onBack, onSuccess }: Props) {
                   <>
                     <FileText size={32} />
                     <strong>{file.name}</strong>
-                    <span>{(file.size / 1024 / 1024).toFixed(2)} MB {pdfPageCount ? `· ${pdfPageCount} páginas` : ''}</span>
+                    <span>{(file.size / 1024 / 1024).toFixed(2)} MB {pdfPageCount ? `· ~${pdfPageCount} páginas` : ''}</span>
                     <small>Clique pra trocar o arquivo</small>
                   </>
                 ) : (
                   <>
                     <Upload size={32} />
-                    <strong>Clique ou arraste seu PDF aqui</strong>
-                    <span>Até 50 MB · Apenas .pdf</span>
+                    <strong>Clique ou arraste seu livro aqui (.pdf, .epub, .mobi)</strong>
+                    <span>Até 50 MB · Suporta .pdf, .epub e .mobi</span>
                   </>
                 )}
               </label>

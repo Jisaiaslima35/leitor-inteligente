@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, Mic, Pause, Play, Send, Sparkles, Target, Vo
 import type { Book } from '../domain/types'
 import type { ProgressState } from '../domain/library'
 import { getProgress } from '../domain/progress'
-import { PdfViewer } from '../components/PdfViewer'
+import { UniversalReader } from '../components/UniversalReader'
 import { TocDrawer } from '../components/TocDrawer'
 import { ShareActions } from '../components/ShareActions'
 import { QuizModal } from '../components/QuizModal'
@@ -976,9 +976,11 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
           margin: '0 0 16px 0',
         }}
       >
-        <PdfViewer
-          pdfPath={pdfUrl}
+        <UniversalReader
+          format={book.format}
+          fileUrl={pdfUrl}
           page={page}
+          totalPages={book.totalPages}
           onPageChange={handlePageChange}
           onInternalNav={handleInternalNav}
           scale={scale}
