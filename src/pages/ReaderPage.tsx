@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback, Suspense } from 'react'
-import { ChevronLeft, ChevronRight, Mic, Pause, Play, Send, Sparkles, Target, Volume2, VolumeX, ZoomIn, ZoomOut, Code2, Users, List, BookOpen } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Mic, Pause, Play, Send, Sparkles, Target, Volume2, VolumeX, ZoomIn, ZoomOut, Code2, Users, List, BookOpen, GraduationCap } from 'lucide-react'
 import type { Book } from '../domain/types'
 import type { ProgressState } from '../domain/library'
 import { getProgress } from '../domain/progress'
@@ -8,12 +8,16 @@ import { TocDrawer } from '../components/TocDrawer'
 import { ShareActions } from '../components/ShareActions'
 import { QuizModal } from '../components/QuizModal'
 import { QuizScoreBoard } from '../components/QuizScoreBoard'
+import { AcademicAssessmentModal } from '../components/AcademicAssessmentModal'
+import { StudentIdentificationModal } from '../components/StudentIdentificationModal'
+import { CreateRoomScopeModal } from '../components/CreateRoomScopeModal'
 import { ChecklistCapitulo } from '../components/ChecklistCapitulo'
 import { SelectionToolbar, type SelectionInfo, type HighlightColor } from '../components/SelectionToolbar'
 import { AnnotationModal, type Highlight } from '../components/AnnotationModal'
 import CollabPanel, { newRoomId } from '../components/CollabPanel'
 import type { RagSource } from '../domain/rag'
 import { useAuth } from '../lib/AuthContext'
+import { useTenant } from '../lib/tenant'
 import { supabase } from '../lib/supabase'
 import { useSpeechToggle } from '../lib/useSpeechToggle'
 import { BASE_URL } from '../lib/baseUrl'
@@ -69,7 +73,9 @@ interface Props {
 }
 
 export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onCloseCollab, guestMode }: Props) {
-  const { user } = useAuth()
+  const { user, isAuthenticated, session } = useAuth()
+  const { tenant } = useTenant()
+  const isUserFormallyAuthenticated = Boolean(isAuthenticated && session?.user?.id && user?.id !== 'demo-user')
   const userId = user.id
   const [pdfUrl, setPdfUrl] = useState<string | null>(null)
   const [pdfError, setPdfError] = useState<string | null>(null)
@@ -184,6 +190,72 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
 
   const [page, setPage] = useState(initial)
   const [isTocOpen, setIsTocOpen] = useState(false)
+
+  // Identificação formal de aluno para salas colaborativas (sem bypass de Leitor Demo)
+  const [studentInfo, setStudentInfo] = useState<{ name: string; identifier: string } | null>(() => {
+    if (typeof window === 'undefined') return null
+    const confirmedRoom = roomId ? sessionStorage.getItem(`leitor-ia:room-identified-${roomId}`) : null
+    if (confirmedRoom !== 'true') return null
+    const sName = (localStorage.getItem('leitor-ia:student-name') || '').trim()
+    const sId = (localStorage.getItem('leitor-ia:student-id') || '').trim()
+    const sLower = sName.toLowerCase()
+    if (!sName || sLower.includes('demo') || sLower.includes('convidado') || sLower === 'leitor') return null
+    const idLower = sId.toLowerCase()
+    if (!sId || idLower.startsWith('guest_') || idLower.includes('demo')) return null
+    return { name: sName, identifier: sId }
+  })
+
+  // Detecta se precisa abrir o modal obrigatório de identificação formal
+  const isGuestInRoom = Boolean(roomId && !isUserFormallyAuthenticated)
+  const needsIdentification = Boolean(isGuestInRoom && !studentInfo)
+
+  // Status de Anfitrião/Tutor da Sala
+  const [isHostInRoom, setIsHostInRoom] = useState<boolean>(() => Boolean(!guestMode && isUserFormallyAuthenticated))
+
+  // Escopo de Estudo Obrigatório por Intervalo de Páginas (Página X a Y)
+  const [createRoomModalOpen, setCreateRoomModalOpen] = useState(false)
+  const [pageScope, setPageScope] = useState<{ start: number; end: number; range: string }>(() => {
+    const total = book.totalPages || 1
+    const p1 = Math.min(Math.max(1, initial), total)
+    const p2 = Math.min(Math.max(p1, p1 + 4), total)
+
+    if (typeof window !== 'undefined' && roomId) {
+      const stored = sessionStorage.getItem(`leitor-ia:room-scope-${roomId}`)
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored)
+          if (parsed.start && parsed.end) {
+            return {
+              start: Number(parsed.start),
+              end: Number(parsed.end),
+              range: parsed.range || `Páginas ${parsed.start} a ${parsed.end}`,
+            }
+          }
+        } catch {}
+      }
+    }
+
+    return {
+      start: p1,
+      end: p2,
+      range: `Páginas ${p1} a ${p2}`,
+    }
+  })
+
+  const handleConfirmRoomScope = (start: number, end: number) => {
+    const range = `Páginas ${start} a ${end}`
+    const rid = roomId || newRoomId()
+    const scopeData = { start, end, range }
+    setPageScope(scopeData)
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem(`leitor-ia:room-scope-${rid}`, JSON.stringify(scopeData))
+      if (!roomId) {
+        const next = `${window.location.hash.split('?')[0]}?room=${rid}`
+        window.location.hash = next
+      }
+    }
+    setCreateRoomModalOpen(false)
+  }
   // Sincroniza page com initial APENAS quando o livro muda (não a cada
   // mudança de progress, senão o onTrack sobrescreve a página atual
   // com a inicial salva).
@@ -288,6 +360,8 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
   // Quiz de revisão por página — blindagem do chat + persistência de score.
   // pageText (extraído do PDF pelo PdfViewer) alimenta o LLM via /quiz/generate.
   const [quizOpen, setQuizOpen] = useState(false)
+  // Avaliação Oficial Formal — prova de 5 questões valendo 0 a 10 com trava de tentativa única.
+  const [academicModalOpen, setAcademicModalOpen] = useState(false)
   // Incrementado após cada quiz salvo — faz o QuizScoreBoard refazer GET /score.
   const [scoreReloadKey, setScoreReloadKey] = useState(0)
   const speech = useSpeechToggle(modoMentor)
@@ -602,6 +676,44 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
     await deleteHighlight(annotationMode.highlight.id)
   }, [annotationMode, deleteHighlight])
 
+  // Breadcrumbs dinâmicos baseados no TOC estruturado em relação à página atual
+  // Declarado antes de qualquer early return (Regras dos Hooks do React)
+  const activeTocBreadcrumb = useMemo(() => {
+    const rawToc = book.toc
+    if (!rawToc || rawToc.length === 0) return null
+
+    let activeIndex = -1
+    for (let i = 0; i < rawToc.length; i++) {
+      const p = rawToc[i][2]
+      if (p <= page) {
+        if (activeIndex === -1 || p >= rawToc[activeIndex][2]) {
+          activeIndex = i
+        }
+      }
+    }
+
+    if (activeIndex === -1) return null
+
+    const activeItem = rawToc[activeIndex]
+    const activeLevel = activeItem[0]
+    const activeTitle = activeItem[1]
+
+    let parentTitle: string | null = null
+    if (activeLevel > 1) {
+      for (let j = activeIndex - 1; j >= 0; j--) {
+        if (rawToc[j][0] < activeLevel) {
+          parentTitle = rawToc[j][1]
+          break
+        }
+      }
+    }
+
+    return {
+      parent: parentTitle,
+      current: activeTitle,
+    }
+  }, [book.toc, page])
+
   if (pdfLoading) {
     return (
       <section>
@@ -640,49 +752,22 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
   const minutesPerPage = 2
   const remainingPages = Math.max(0, book.totalPages - page)
   const remainingMinutes = remainingPages * minutesPerPage
-  // Breadcrumbs dinâmicos baseados no TOC estruturado em relação à página atual
-  const activeTocBreadcrumb = useMemo(() => {
-    const rawToc = book.toc
-    if (!rawToc || rawToc.length === 0) return null
-
-    let activeIndex = -1
-    for (let i = 0; i < rawToc.length; i++) {
-      const p = rawToc[i][2]
-      if (p <= page) {
-        if (activeIndex === -1 || p >= rawToc[activeIndex][2]) {
-          activeIndex = i
-        }
-      }
-    }
-
-    if (activeIndex === -1) return null
-
-    const activeItem = rawToc[activeIndex]
-    const activeLevel = activeItem[0]
-    const activeTitle = activeItem[1]
-
-    let parentTitle: string | null = null
-    if (activeLevel > 1) {
-      for (let j = activeIndex - 1; j >= 0; j--) {
-        if (rawToc[j][0] < activeLevel) {
-          parentTitle = rawToc[j][1]
-          break
-        }
-      }
-    }
-
-    return {
-      parent: parentTitle,
-      current: activeTitle,
-    }
-  }, [book.toc, page])
 
   const remainingLabel = remainingMinutes < 60
     ? `${remainingMinutes} min restantes`
     : `${Math.floor(remainingMinutes / 60)}h ${remainingMinutes % 60}min restantes`
 
   return (
-    <section>
+    <section
+      className="reader-page-container"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        width: '100%',
+        maxWidth: '100%',
+        boxSizing: 'border-box',
+      }}
+    >
       <div className="section-title">
         <h2>{book.title}</h2>
         <small>{book.author}</small>
@@ -863,12 +948,10 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
             onClick={() => onOpenDev?.(book.id)}
             title="Abrir a Sala Dev (playground de código + Mentor Dev)"
             aria-label="Abrir Sala Dev"
-            // 23/08/2026: Sala Dev é exclusiva pra livros de programação.
+            // 23/08/2026: Sala Dev é exclusiva pra livros de programação/tecnologia.
             // Outros livros (gospel, autoajuda, etc) simplesmente não veem o botão.
-            // A trava REAL fica no App.tsx (rota /dev/<slug>) — isso aqui é só
-            // visual pra não confundir o usuário.
-            hidden={book.categoria !== 'programacao'}
-            style={book.categoria !== 'programacao' ? { display: 'none' } : undefined}
+            hidden={book.categoria !== 'programacao' && book.categoria !== 'tecnologia'}
+            style={book.categoria !== 'programacao' && book.categoria !== 'tecnologia' ? { display: 'none' } : undefined}
           >
             <Code2 size={16} />
             <span>Área Dev</span>
@@ -883,17 +966,28 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
         />
       </div>
 
-      <PdfViewer
-        pdfPath={pdfUrl}
-        page={page}
-        onPageChange={handlePageChange}
-        onInternalNav={handleInternalNav}
-        scale={scale}
-        onTextExtracted={setPageText}
-        highlights={highlights}
-        onSelectionChange={setSelection}
-        onHighlightClick={handleHighlightClick}
-      />
+      <div
+        className="reader-pdf-stage"
+        style={{
+          width: '100%',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'flex-start',
+          margin: '0 0 16px 0',
+        }}
+      >
+        <PdfViewer
+          pdfPath={pdfUrl}
+          page={page}
+          onPageChange={handlePageChange}
+          onInternalNav={handleInternalNav}
+          scale={scale}
+          onTextExtracted={setPageText}
+          highlights={highlights}
+          onSelectionChange={setSelection}
+          onHighlightClick={handleHighlightClick}
+        />
+      </div>
 
       {selection && (
         <SelectionToolbar
@@ -914,6 +1008,165 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
         onSave={handleAnnotationSave}
         onDelete={handleAnnotationDelete}
       />
+
+      {/* ── Painel de Ações de Aprendizado: Estudo em Dupla e Avaliação Oficial ── */}
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 14, margin: '16px 0 20px 0', flexWrap: 'wrap' }}>
+        {!roomId && (
+          <button
+            type="button"
+            onClick={() => setCreateRoomModalOpen(true)}
+            title="Abrir modal para definir escopo de páginas e criar sala"
+            aria-label="Estudar em Dupla"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '12px 24px',
+              borderRadius: 999,
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: 15,
+              fontWeight: 600,
+              color: '#fff',
+              background: 'linear-gradient(90deg, #059669 0%, #0d9488 50%, #0891b2 100%)',
+              boxShadow: '0 4px 14px rgba(5, 150, 105, 0.35)',
+              transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = 'translateY(-1px) scale(1.03)'
+              e.currentTarget.style.boxShadow = '0 8px 22px rgba(5, 150, 105, 0.45)'
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = 'translateY(0) scale(1)'
+              e.currentTarget.style.boxShadow = '0 4px 14px rgba(5, 150, 105, 0.35)'
+            }}
+          >
+            <span style={{
+              display: 'inline-flex',
+              animation: 'collab-pulse 2s ease-in-out infinite',
+            }}>
+              <Users size={18} />
+            </span>
+            <span>Estudar em Dupla</span>
+          </button>
+        )}
+
+        {/* Badge fixo/informativo de Escopo de Estudo Obrigatório */}
+        <div
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '8px 18px',
+            borderRadius: 999,
+            backgroundColor: 'rgba(30, 41, 59, 0.95)',
+            border: '1px solid rgba(168, 85, 247, 0.45)',
+            color: '#e2e8f0',
+            fontSize: 13,
+            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
+          }}
+          title={isHostInRoom || !roomId ? 'Clique para ajustar o intervalo de páginas' : 'Intervalo de páginas definido pelo tutor da sala'}
+        >
+          <BookOpen size={15} style={{ color: '#c084fc' }} />
+          <span>📖 Estudo: <strong style={{ color: '#ffffff' }}>Páginas {pageScope.start} a {pageScope.end}</strong></span>
+          {(isHostInRoom || !roomId) && (
+            <button
+              type="button"
+              onClick={() => setCreateRoomModalOpen(true)}
+              style={{
+                background: 'rgba(168, 85, 247, 0.2)',
+                border: '1px solid rgba(168, 85, 247, 0.5)',
+                color: '#e9d5ff',
+                borderRadius: 6,
+                padding: '2px 8px',
+                fontSize: 11,
+                cursor: 'pointer',
+                marginLeft: 4,
+                fontWeight: 600,
+              }}
+              title="Ajustar intervalo de páginas"
+            >
+              Alterar
+            </button>
+          )}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setAcademicModalOpen(true)}
+          title={`Realizar Avaliação Oficial: Páginas ${pageScope.start} a ${pageScope.end}`}
+          aria-label="Realizar Avaliação Oficial"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 10,
+            padding: '12px 24px',
+            borderRadius: 999,
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: 15,
+            fontWeight: 600,
+            color: '#fff',
+            background: 'linear-gradient(90deg, #9333ea 0%, #7c3aed 50%, #6366f1 100%)',
+            boxShadow: '0 4px 14px rgba(147, 51, 234, 0.35)',
+            transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.transform = 'translateY(-1px) scale(1.03)'
+            e.currentTarget.style.boxShadow = '0 8px 22px rgba(147, 51, 234, 0.45)'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.transform = 'translateY(0) scale(1)'
+            e.currentTarget.style.boxShadow = '0 4px 14px rgba(147, 51, 234, 0.35)'
+          }}
+        >
+          <GraduationCap size={18} />
+          <span>Avaliação Oficial • Páginas {pageScope.start} a {pageScope.end}</span>
+        </button>
+      </div>
+
+      {roomId && !needsIdentification && (
+        <div id="collab-study-section" style={{ width: '100%', margin: '16px 0 28px 0' }}>
+          <Suspense fallback={<div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>Carregando sala de estudo...</div>}>
+            <CollabPanel
+              roomId={roomId}
+              displayName={
+                isUserFormallyAuthenticated
+                  ? (user.name || user.email?.split('@')[0] || 'Professor')
+                  : (studentInfo?.name || 'Estudante')
+              }
+              jwtToken={jwtToken}
+              isAuthenticated={isUserFormallyAuthenticated && !guestMode}
+              defaultMode="text"
+              currentPage={page}
+              bookSlug={book.id}
+              bookTitle={book.title}
+              tenantId={tenant?.id}
+              chapterTitle={pageScope.range}
+              pageStart={pageScope.start}
+              pageEnd={pageScope.end}
+              pageRange={pageScope.range}
+              onScopeSync={(scope) => {
+                if (scope && scope.pageStart && scope.pageEnd) {
+                  setPageScope({
+                    start: scope.pageStart,
+                    end: scope.pageEnd,
+                    range: scope.pageRange || `Páginas ${scope.pageStart} a ${scope.pageEnd}`,
+                  })
+                }
+              }}
+              onHostStatusChange={(isHost) => {
+                setIsHostInRoom(Boolean(isHost))
+              }}
+              onClose={() => {
+                const base = window.location.hash.split('?')[0]
+                window.location.hash = base
+                onCloseCollab?.()
+              }}
+            />
+          </Suspense>
+        </div>
+      )}
 
       {showOnboarding && (
         <div
@@ -996,6 +1249,7 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
         hasSkill={hasSkill}
         pageText={pageText}
         onOpenQuiz={() => setQuizOpen(true)}
+        onOpenAcademic={() => setAcademicModalOpen(true)}
       />
       {/* Checklist desativado em 04/09 — Isaías pediu pra ocultar (poluia a leitura).
           Backend checklist_server (porta 9142) fica de pé pra reativação futura.
@@ -1021,90 +1275,45 @@ export function ReaderPage({ book, progress, onTrack, onOpenDev, roomId, onClose
         pageText={pageText}
         onScoreSaved={() => setScoreReloadKey((k) => k + 1)}
       />
-      {/* 06/09/2026 v9 Isaías: polimento visual do botão "Estudar em Dupla".
-          - Esconde quando o painel já tá aberto (`roomId` setado) pra não
-            duplicar com o cabeçalho "👥 Estudo em Dupla" do painel.
-          - Estilo premium: degradê emerald/teal/cyan harmonizando com o
-            tom do Placar do Quiz (roxo/âmbar da paleta), texto branco,
-            cantos arredondados, sombra + hover scale-105.
-          - Posicionado centralizado abaixo do QuizScoreBoard (my-4 = respiro). */}
-      {!roomId && (
-        <div style={{ display: 'flex', justifyContent: 'center', margin: '16px 0' }}>
-          <button
-            type="button"
-            onClick={() => {
-              const rid = newRoomId()
-              const next = `${window.location.hash.split('?')[0]}?room=${rid}`
-              window.location.hash = next
-            }}
-            title="Abrir painel de estudo em dupla (gera link copiável)"
-            aria-label="Estudar em Dupla"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 10,
-              padding: '12px 24px',
-              borderRadius: 999,
-              border: 'none',
-              cursor: 'pointer',
-              fontSize: 15,
-              fontWeight: 600,
-              color: '#fff',
-              // Degradê: emerald-600 → teal-600 → cyan-600 (Tailwind v3
-              // equivalent). Tons frios que conversam com a paleta roxo/âmbar
-              // sem competir visualmente com o Placar do Quiz.
-              background: 'linear-gradient(90deg, #059669 0%, #0d9488 50%, #0891b2 100%)',
-              boxShadow: '0 4px 14px rgba(5, 150, 105, 0.35)',
-              transition: 'transform 0.2s ease, box-shadow 0.2s ease',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.transform = 'translateY(-1px) scale(1.03)'
-              e.currentTarget.style.boxShadow = '0 8px 22px rgba(5, 150, 105, 0.45)'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.transform = 'translateY(0) scale(1)'
-              e.currentTarget.style.boxShadow = '0 4px 14px rgba(5, 150, 105, 0.35)'
-            }}
-          >
-            <span style={{
-              display: 'inline-flex',
-              animation: 'collab-pulse 2s ease-in-out infinite',
-            }}>
-              <Users size={18} />
-            </span>
-            <span>Estudar em Dupla</span>
-          </button>
-        </div>
-      )}
-      {roomId && (
-        <Suspense fallback={null}>
-          <CollabPanel
-            roomId={roomId}
-            // 04/09/2026 (v4): guest gera display_name persistente (sem user.name).
-            // logado usa user.name → user.email → 'Leitor'.
-            displayName={
-              guestMode
-                ? (() => {
-                    const KEY = 'leitor-ia:guest-name'
-                    const cached = typeof window !== 'undefined' ? localStorage.getItem(KEY) : null
-                    const name = cached || `Convidado ${Math.floor(1000 + Math.random() * 9000)}`
-                    try { localStorage.setItem(KEY, name) } catch { /* sem storage */ }
-                    return name
-                  })()
-                : (user?.name || user?.email?.split('@')[0] || 'Leitor')
-            }
-            jwtToken={jwtToken}
-            isAuthenticated={!!user?.id && !guestMode}
-            defaultMode="text"
-            onClose={() => {
-              const base = window.location.hash.split('?')[0]
-              window.location.hash = base
-              onCloseCollab?.()
-            }}
-          />
-        </Suspense>
-      )}
-
+      <AcademicAssessmentModal
+        isOpen={academicModalOpen}
+        onClose={() => setAcademicModalOpen(false)}
+        ebookId={book.id}
+        ebookTitle={book.title}
+        userId={user?.id || userId}
+        tenantId={tenant?.id || '2656ae53-fbb0-4478-ab1a-36f3561d51df'}
+        chapterTitle={pageScope.range}
+        pageStart={pageScope.start}
+        pageEnd={pageScope.end}
+        pageRange={pageScope.range}
+        tenantName={tenant?.name}
+        studentName={
+          isUserFormallyAuthenticated
+            ? (user?.name || user?.email?.split('@')[0] || 'Estudante')
+            : (studentInfo?.name || 'Estudante')
+        }
+        studentIdentifier={
+          isUserFormallyAuthenticated
+            ? (user?.email || user?.id)
+            : (studentInfo?.identifier || 'N/A')
+        }
+      />
+      <StudentIdentificationModal
+        isOpen={needsIdentification}
+        tenantName={tenant?.name}
+        roomId={roomId || undefined}
+        onIdentified={(fullName, identifier) => {
+          setStudentInfo({ name: fullName, identifier })
+        }}
+      />
+      <CreateRoomScopeModal
+        isOpen={createRoomModalOpen}
+        onClose={() => setCreateRoomModalOpen(false)}
+        bookTitle={book.title}
+        totalPages={book.totalPages || 1}
+        currentPage={page}
+        onConfirm={handleConfirmRoomScope}
+      />
       <TocDrawer
         isOpen={isTocOpen}
         onClose={() => setIsTocOpen(false)}
@@ -1143,9 +1352,10 @@ interface ChatProps {
   hasSkill: boolean  // só mostra botão Modo Mentor se tiver skill gerada pro slug
   pageText: string  // texto extraído do PDF (alimenta o QuizModal)
   onOpenQuiz: () => void  // abre o QuizModal da página atual
+  onOpenAcademic?: () => void  // abre a Avaliação Oficial Formal de 5 questões
 }
 
-function ProfessorChat({ book, messages, input, setInput, send, thinking, listening, voiceSupported, toggleListening, speech, chatScrollRef, page, modoMentor, setModoMentor, hasSkill, pageText, onOpenQuiz }: ChatProps) {
+function ProfessorChat({ book, messages, input, setInput, send, thinking, listening, voiceSupported, toggleListening, speech, chatScrollRef, page, modoMentor, setModoMentor, hasSkill, pageText, onOpenQuiz, onOpenAcademic }: ChatProps) {
   return (
     <div className="professor-panel" style={{ marginTop: 20 }}>
       <div className="professor-header">
@@ -1331,6 +1541,28 @@ function ProfessorChat({ book, messages, input, setInput, send, thinking, listen
         >
           <Target size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} /> Quiz da Página
         </button>
+        {onOpenAcademic && (
+          <button
+            type="button"
+            onClick={onOpenAcademic}
+            title="Abrir Avaliação Oficial Formal (5 questões com nota no boletim acadêmico)"
+            style={{
+              padding: '8px 14px',
+              fontSize: 13,
+              fontWeight: 600,
+              borderRadius: 999,
+              background: 'linear-gradient(135deg, #4c1d95, #6d28d9)',
+              color: '#f3e8ff',
+              border: '1px solid #c084fc',
+              cursor: 'pointer',
+              transition: 'transform 0.15s, box-shadow 0.15s',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-1px)' }}
+            onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)' }}
+          >
+            <GraduationCap size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} /> Avaliação Oficial
+          </button>
+        )}
       </div>
       {speech.debugInfo && (
         <div className="tts-debug" data-tts-debug title="Debug TTS — usado pra diagnóstico via chrome://inspect">

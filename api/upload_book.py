@@ -127,6 +127,29 @@ def resolve_user_id(auth_header: str) -> str | None:
         return None
 
 
+def resolve_tenant_id(tenant_val: str | None) -> str | None:
+    """Resolve UUID de tenant ou converte slug para UUID na tabela public.tenants."""
+    if not tenant_val:
+        return None
+    val = str(tenant_val).strip()
+    if not val:
+        return None
+    if re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', val, re.I):
+        return val
+    try:
+        req = Request(
+            f'{SUPABASE_URL}/rest/v1/tenants?slug=eq.{urllib_quote(val)}&select=id&limit=1',
+            headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'}
+        )
+        with urlopen(req, timeout=10) as r:
+            rows = json.loads(r.read())
+            if rows:
+                return rows[0]['id']
+    except Exception as e:
+        print(f'[upload-book] WARN falha ao resolver tenant_id por slug "{val}": {e}', flush=True)
+    return None
+
+
 def slugify(text: str) -> str:
     """Gera slug a partir de title. Limita a 60 chars, lowercase, sem acentos."""
     import unicodedata
@@ -510,7 +533,7 @@ def extract_toc(pdf_path: str, pages: list[dict] = None) -> list[list]:
 
 
 # --- Jobs em background ---
-def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, author: str, total_pages: int):
+def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, author: str, total_pages: int, tenant_id: str = None):
     """Job async: processa PDF, gera embeddings, salva tudo."""
     tmp_dir = f'/tmp/upload-{user_id}-{int(time.time())}'
     os.makedirs(tmp_dir, exist_ok=True)
@@ -746,10 +769,14 @@ def run_pipeline(user_id: str, ebook_id: str, storage_path: str, title: str, aut
             print(f'[upload-job] cover_url salva no ebook', flush=True)
 
         # 10. INSERT user_library (libera pro próprio user, sem precisar comprar)
+        lib_payload = {'user_id': user_id, 'ebook_id': ebook_id,
+                       'payment_status': 'confirmed'}
+        if tenant_id:
+            lib_payload['tenant_id'] = tenant_id
+
         lib_req = Request(
             f'{SUPABASE_URL}/rest/v1/user_library',
-            data=json.dumps({'user_id': user_id, 'ebook_id': ebook_id,
-                             'payment_status': 'confirmed'}).encode(),
+            data=json.dumps(lib_payload).encode(),
             headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
                      'Content-Type': 'application/json',
                      'Prefer': 'resolution=ignore-duplicates,return=representation'},
@@ -937,35 +964,96 @@ class Handler(BaseHTTPRequestHandler):
                 if not storage_path.startswith(f'{user_id}/'):
                     return self.send_json(403, {'error': 'Você só pode processar seus próprios uploads'})
 
+                # Extrai tenant_id se enviado
+                tenant_val = (data.get('tenant_id') or data.get('tenant_slug') or '').strip()
+                tenant_id = resolve_tenant_id(tenant_val)
+
                 # INSERT ebook (com owner_user_id = user_id)
-                slug = slugify(title) + '-' + datetime.now().strftime('%Y%m%d%H%M%S')
-                ebook_req = Request(
-                    f'{SUPABASE_URL}/rest/v1/ebooks',
-                    data=json.dumps({
-                        'slug': slug,
-                        'title': title,
-                        'author': author,
-                        'description': f'Enviado por {user_id[:8]}... em {datetime.now().isoformat()}',
-                        'pdf_storage_path': storage_path,  # será atualizado quando mover pra {user_id}/{ebook_id}/livro.pdf
-                        'total_pages': total_pages,
-                        'price_cents': 0,
-                        'owner_user_id': user_id,
-                        'is_published': True,
-                        'categoria': categoria,
-                    }).encode(),
-                    headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
-                             'Content-Type': 'application/json',
-                             'Prefer': 'return=representation'},
-                    method='POST'
-                )
-                with urlopen(ebook_req, timeout=15) as r:
-                    ebook_data = json.loads(r.read())
+                custom_slug = (data.get('slug') or '').strip()
+                if custom_slug:
+                    base_slug = slugify(custom_slug)
+                    slug = base_slug
+                else:
+                    base_slug = slugify(title)
+                    slug = base_slug + '-' + datetime.now().strftime('%Y%m%d%H%M%S')
+
+                is_published_val = data.get('is_published')
+                is_published = True if is_published_val is None else bool(is_published_val)
+
+                ebook_payload = {
+                    'slug': slug,
+                    'title': title,
+                    'author': author,
+                    'description': description or f'Enviado por {user_id[:8]}... em {datetime.now().isoformat()}',
+                    'pdf_storage_path': storage_path,  # será atualizado quando mover pra {user_id}/{ebook_id}/livro.pdf
+                    'total_pages': total_pages,
+                    'price_cents': 0,
+                    'owner_user_id': user_id,
+                    'is_published': is_published,
+                    'categoria': categoria,
+                }
+                if tenant_id:
+                    ebook_payload['tenant_id'] = tenant_id
+
+                try:
+                    ebook_req = Request(
+                        f'{SUPABASE_URL}/rest/v1/ebooks',
+                        data=json.dumps(ebook_payload).encode(),
+                        headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
+                                 'Content-Type': 'application/json',
+                                 'Prefer': 'return=representation'},
+                        method='POST'
+                    )
+                    with urlopen(ebook_req, timeout=15) as r:
+                        ebook_data = json.loads(r.read())
+                except HTTPError as e_eb:
+                    if e_eb.code == 409 and custom_slug:
+                        # Colisão de slug, adiciona timestamp único
+                        slug = f"{base_slug}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                        ebook_payload['slug'] = slug
+                        ebook_req2 = Request(
+                            f'{SUPABASE_URL}/rest/v1/ebooks',
+                            data=json.dumps(ebook_payload).encode(),
+                            headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
+                                     'Content-Type': 'application/json',
+                                     'Prefer': 'return=representation'},
+                            method='POST'
+                        )
+                        with urlopen(ebook_req2, timeout=15) as r2:
+                            ebook_data = json.loads(r2.read())
+                    else:
+                        raise
+
                 ebook_id = ebook_data[0]['id']
+
+                # 4. Inserção imediata em user_library para o livro aparecer na biblioteca na hora
+                lib_payload = {
+                    'user_id': user_id,
+                    'ebook_id': ebook_id,
+                    'payment_status': 'confirmed'
+                }
+                if tenant_id:
+                    lib_payload['tenant_id'] = tenant_id
+
+                try:
+                    lib_req = Request(
+                        f'{SUPABASE_URL}/rest/v1/user_library',
+                        data=json.dumps(lib_payload).encode(),
+                        headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
+                                 'Content-Type': 'application/json',
+                                 'Prefer': 'resolution=ignore-duplicates,return=representation'},
+                        method='POST'
+                    )
+                    with urlopen(lib_req, timeout=15) as r_lib:
+                        pass
+                    print(f'[/process] user_library vinculado com sucesso pro user={user_id[:8]} ebook={ebook_id[:8]} tenant={tenant_id}', flush=True)
+                except Exception as e_lib:
+                    print(f'[/process] Aviso ao inserir user_library antecipado: {e_lib}', flush=True)
 
                 # Dispara job em background
                 threading.Thread(
                     target=run_pipeline,
-                    args=(user_id, ebook_id, storage_path, title, author, total_pages),
+                    args=(user_id, ebook_id, storage_path, title, author, total_pages, tenant_id),
                     daemon=True
                 ).start()
 
@@ -1090,21 +1178,28 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     return self.send_json(500, {'error': f'Erro inesperado no envio ao Storage: {type(e).__name__}: {e}'})
 
+                tenant_val = (fields.get('tenant_id') or fields.get('tenant_slug') or '').strip()
+                tenant_id = resolve_tenant_id(tenant_val)
+
                 # 4. INSERT ebook (com owner_user_id = ADMIN)
+                ebook_payload = {
+                    'slug': slug,
+                    'title': title,
+                    'author': author,
+                    'description': f'Cadastrado pelo admin em {datetime.now().isoformat()}',
+                    'pdf_storage_path': storage_path,
+                    'total_pages': 0,
+                    'price_cents': price_cents,
+                    'owner_user_id': ADMIN_USER_ID,
+                    'is_published': is_published,
+                    'categoria': categoria,
+                }
+                if tenant_id:
+                    ebook_payload['tenant_id'] = tenant_id
+
                 ebook_req = Request(
                     f'{SUPABASE_URL}/rest/v1/ebooks',
-                    data=json.dumps({
-                        'slug': slug,
-                        'title': title,
-                        'author': author,
-                        'description': f'Cadastrado pelo admin em {datetime.now().isoformat()}',
-                        'pdf_storage_path': storage_path,
-                        'total_pages': 0,
-                        'price_cents': price_cents,
-                        'owner_user_id': ADMIN_USER_ID,
-                        'is_published': is_published,
-                        'categoria': categoria,
-                    }).encode(),
+                    data=json.dumps(ebook_payload).encode(),
                     headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
                              'Content-Type': 'application/json',
                              'Prefer': 'return=representation'},
@@ -1114,7 +1209,7 @@ class Handler(BaseHTTPRequestHandler):
                     with urlopen(ebook_req, timeout=15) as r:
                         ebook_data = json.loads(r.read())
                     ebook_id = ebook_data[0]['id']
-                    print(f'[admin-upload] ebook criado: id={ebook_id} slug={slug}', flush=True)
+                    print(f'[admin-upload] ebook criado: id={ebook_id} slug={slug} tenant={tenant_id}', flush=True)
                 except HTTPError as e:
                     # 17/09/2026 — slug duplicado vira 409 → era 500 silencioso.
                     # Isaías: "Claudinho, o upload de e-books voltou a dar Erro 500".
@@ -1145,13 +1240,17 @@ class Handler(BaseHTTPRequestHandler):
                 print(f'[admin-upload] STEP 4: ebook_id={ebook_id} slug={slug} — indo pro user_library', flush=True)
 
                 # 5. Insere em user_library do ADMIN (libera imediato, sem esperar index)
+                lib_payload = {
+                    'user_id': ADMIN_USER_ID,
+                    'ebook_id': ebook_id,
+                    'payment_status': 'confirmed',
+                }
+                if tenant_id:
+                    lib_payload['tenant_id'] = tenant_id
+
                 lib_req = Request(
                     f'{SUPABASE_URL}/rest/v1/user_library',
-                    data=json.dumps({
-                        'user_id': ADMIN_USER_ID,
-                        'ebook_id': ebook_id,
-                        'payment_status': 'confirmed',
-                    }).encode(),
+                    data=json.dumps(lib_payload).encode(),
                     headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
                              'Content-Type': 'application/json',
                              'Prefer': 'resolution=ignore-duplicates'},
@@ -1167,18 +1266,22 @@ class Handler(BaseHTTPRequestHandler):
                 # pipeline falhar, o admin já tem o registro contábil.
                 # purchases.id é UUID — não pode ser string livre como "admin-free-..."
                 purchase_id = str(uuid.uuid4())
+                purch_payload = {
+                    'id': purchase_id,
+                    'user_id': ADMIN_USER_ID,
+                    'ebook_id': ebook_id,
+                    'amount_cents': 0,
+                    'currency': 'BRL',
+                    'payment_method': 'admin_bypass',
+                    'status': 'paid',
+                    'paid_at': datetime.now().isoformat(),
+                }
+                if tenant_id:
+                    purch_payload['tenant_id'] = tenant_id
+
                 purch_req = Request(
                     f'{SUPABASE_URL}/rest/v1/purchases',
-                    data=json.dumps({
-                        'id': purchase_id,
-                        'user_id': ADMIN_USER_ID,
-                        'ebook_id': ebook_id,
-                        'amount_cents': 0,
-                        'currency': 'BRL',
-                        'payment_method': 'admin_bypass',
-                        'status': 'paid',
-                        'paid_at': datetime.now().isoformat(),
-                    }).encode(),
+                    data=json.dumps(purch_payload).encode(),
                     headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
                              'Content-Type': 'application/json',
                              'Prefer': 'resolution=ignore-duplicates'},
@@ -1216,86 +1319,90 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 return self.send_json(500, {'error': f'{type(e).__name__}: {str(e)[:400]}'})
 
+        if self.path == '/api/admin/update-book':
+            return self._handle_update_book()
+
         self.send_json(404, {'error': 'not found'})
 
+    def _handle_update_book(self):
+        try:
+            n = int(self.headers.get('Content-Length', '0'))
+            body = self.rfile.read(n) if n else b'{}'
+            data = json.loads(body) if body else {}
+            ebook_id = (data.get('ebook_id') or '').strip()
+            if not ebook_id:
+                return self.send_json(400, {'error': 'ebook_id obrigatório'})
+
+            # Valida autorização: admin OU owner_user_id
+            admin_ok, admin_reason = _check_admin_request(self)
+            auth = self.headers.get('Authorization', '')
+            user_id = resolve_user_id(auth)
+
+            # Busca owner_user_id do ebook
+            get_req = Request(
+                f'{SUPABASE_URL}/rest/v1/ebooks?id=eq.{ebook_id}&select=id,owner_user_id',
+                headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+            )
+            with urlopen(get_req, timeout=15) as r:
+                rows = json.loads(r.read())
+            if not rows:
+                return self.send_json(404, {'error': 'ebook não encontrado'})
+
+            ebook = rows[0]
+            if not admin_ok and ebook.get('owner_user_id') != user_id:
+                return self.send_json(403, {'error': 'acesso negado: você só pode editar seus próprios livros'})
+
+            # Campos opcionais — só atualiza o que vier (PUT/POST parcial)
+            allowed = {'title', 'slug', 'author', 'price_cents', 'is_published', 'shareable', 'categoria', 'description'}
+            update = {k: v for k, v in data.items() if k in allowed and v is not None}
+            if 'categoria' in update:
+                cat = str(update['categoria']).strip().lower()
+                if cat not in {'comum', 'programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros', 'batalha-espiritual', 'casamento-familia', 'infantil'}:
+                    return self.send_json(400, {'error': f'categoria inválida: {cat!r}. Use: comum, programacao, tecnologia, gospel, literatura, autoajuda, outros, batalha-espiritual, casamento-familia, infantil.'})
+                update['categoria'] = cat
+            if 'description' in update:
+                desc = str(update['description']).strip()
+                update['description'] = desc[:1000] if desc else None
+            if 'price_cents' in update:
+                update['price_cents'] = max(0, int(update['price_cents']))
+            if 'slug' in update:
+                update['slug'] = re.sub(r'[^a-z0-9-]+', '-', str(update['slug']).lower())[:60].strip('-')
+            update['updated_at'] = datetime.now().isoformat()
+
+            if not update or set(update.keys()) <= {'updated_at'}:
+                return self.send_json(400, {'error': 'Nenhum campo editável enviado'})
+
+            req = Request(
+                f'{SUPABASE_URL}/rest/v1/ebooks?id=eq.{ebook_id}',
+                data=json.dumps(update).encode(),
+                headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
+                         'Content-Type': 'application/json',
+                         'Prefer': 'return=representation'},
+                method='PATCH',
+            )
+            with urlopen(req, timeout=15) as r:
+                updated = json.loads(r.read())
+            if not updated:
+                return self.send_json(404, {'error': 'ebook não encontrado'})
+            print(f'[admin-update] ebook {ebook_id} atualizado: {list(update.keys())}', flush=True)
+            return self.send_json(200, {'ok': True, 'ebook': updated[0]})
+        except Exception as e:
+            traceback.print_exc()
+            return self.send_json(500, {'error': str(e)[:500]})
+
     def do_PUT(self):
-        # PUT /api/admin/update-book — edita metadados do ebook (título, slug,
-        # autor, preço, is_published, shareable). Isaías msg 19/08: CRUD admin
-        # precisa de editar funcionando. NÃO mexe em PDF/capa (não é upload).
-        # self.path pode vir com query string — extrai só o path pra comparar
         path_only = urllib_urlparse(self.path).path
         if path_only == '/api/admin/update-book':
-            try:
-                # v14.1: valida Bearer JWT admin (legacy X-Admin-Token ainda
-                # aceito com WARNING por 1 ciclo de migração)
-                admin_ok, admin_reason = _check_admin_request(self)
-                if not admin_ok:
-                    return self.send_json(403, {'error': f'acesso negado: {admin_reason}'})
-
-                n = int(self.headers.get('Content-Length', '0'))
-                body = self.rfile.read(n) if n else b'{}'
-                data = json.loads(body) if body else {}
-                ebook_id = (data.get('ebook_id') or '').strip()
-                if not ebook_id:
-                    return self.send_json(400, {'error': 'ebook_id obrigatório'})
-
-                # Campos opcionais — só atualiza o que vier (PUT parcial)
-                allowed = {'title', 'slug', 'author', 'price_cents', 'is_published', 'shareable', 'categoria', 'description'}
-                update = {k: v for k, v in data.items() if k in allowed and v is not None}
-                # 24/08/2026 (P8.1) + 11/09/2026 (v19): whitelist inclui 'comum'
-                # (legado 19 livros P4) + 6 do P8 + 3 das campanhas.
-                if 'categoria' in update:
-                    cat = str(update['categoria']).strip().lower()
-                    if cat not in {'comum', 'programacao', 'tecnologia', 'gospel', 'literatura', 'autoajuda', 'outros', 'batalha-espiritual', 'casamento-familia', 'infantil'}:
-                        return self.send_json(400, {'error': f'categoria inválida: {cat!r}. Use: comum, programacao, tecnologia, gospel, literatura, autoajuda, outros, batalha-espiritual, casamento-familia, infantil.'})
-                    update['categoria'] = cat
-                # 11/09/2026 (v19 — campanhas): descrição opcional.
-                if 'description' in update:
-                    desc = str(update['description']).strip()
-                    update['description'] = desc[:1000] if desc else None
-                if 'price_cents' in update:
-                    update['price_cents'] = max(0, int(update['price_cents']))
-                if 'slug' in update:
-                    update['slug'] = re.sub(r'[^a-z0-9-]+', '-', str(update['slug']).lower())[:60].strip('-')
-                update['updated_at'] = datetime.now().isoformat()
-
-                if not update or set(update.keys()) <= {'updated_at'}:
-                    return self.send_json(400, {'error': 'Nenhum campo editável enviado'})
-
-                req = Request(
-                    f'{SUPABASE_URL}/rest/v1/ebooks?id=eq.{ebook_id}',
-                    data=json.dumps(update).encode(),
-                    headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}',
-                             'Content-Type': 'application/json',
-                             'Prefer': 'return=representation'},
-                    method='PATCH',
-                )
-                with urlopen(req, timeout=15) as r:
-                    updated = json.loads(r.read())
-                if not updated:
-                    return self.send_json(404, {'error': 'ebook não encontrado'})
-                print(f'[admin-update] ebook {ebook_id} atualizado: {list(update.keys())}', flush=True)
-                return self.send_json(200, {'ok': True, 'ebook': updated[0]})
-            except Exception as e:
-                traceback.print_exc()
-                return self.send_json(500, {'error': str(e)[:500]})
+            return self._handle_update_book()
 
         self.send_json(404, {'error': 'not found'})
 
     def do_DELETE(self):
         # DELETE /api/admin/delete-book?ebook_id=<uuid> — apaga ebook e tudo
-        # relacionado (purchases, user_library, storage). Isaías msg 19/08: o
-        # botão de apagar no AdminPage não funcionava (RLS do Supabase bloqueia
-        # DELETE direto via anon key, mesmo o admin). Solução: backend com
-        # service_role key faz o cascade completo.
-        # self.path vem COM query string — extrai só o path pra comparar
+        # relacionado (purchases, user_library, storage).
         path_only = urllib_urlparse(self.path).path
         if path_only == '/api/admin/delete-book':
             try:
-                admin_ok, admin_reason = _check_admin_request(self)
-                if not admin_ok:
-                    return self.send_json(403, {'error': f'acesso negado: {admin_reason}'})
-
                 ebook_id = (
                     self.headers.get('X-Ebook-Id', '').strip()
                     or urllib_parse_qs(urllib_urlparse(self.path).query).get('ebook_id', [''])[0]
@@ -1303,9 +1410,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not ebook_id:
                     return self.send_json(400, {'error': 'ebook_id obrigatório (header X-Ebook-Id ou ?ebook_id=)'})
 
-                # 1. Busca o ebook (pra saber pdf_storage_path / cover_url pra limpar storage)
+                # 1. Busca o ebook (pra saber pdf_storage_path / cover_url pra limpar storage e validar owner)
                 get_req = Request(
-                    f'{SUPABASE_URL}/rest/v1/ebooks?id=eq.{ebook_id}&select=id,slug,pdf_storage_path,cover_url',
+                    f'{SUPABASE_URL}/rest/v1/ebooks?id=eq.{ebook_id}&select=id,slug,owner_user_id,pdf_storage_path,cover_url',
                     headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
                 )
                 with urlopen(get_req, timeout=15) as r:
@@ -1313,9 +1420,35 @@ class Handler(BaseHTTPRequestHandler):
                 if not rows:
                     return self.send_json(404, {'error': 'ebook não encontrado'})
                 ebook = rows[0]
+                slug = ebook.get('slug') or ''
 
-                # 2. Limpa tabelas relacionadas (ordem: dependentes primeiro)
-                for table in ('purchases', 'user_library'):
+                admin_ok, admin_reason = _check_admin_request(self)
+                auth = self.headers.get('Authorization', '')
+                user_id = resolve_user_id(auth)
+
+                if not admin_ok and ebook.get('owner_user_id') != user_id:
+                    return self.send_json(403, {'error': 'acesso negado: você só pode excluir seus próprios livros'})
+
+                # 2. Desacopla ou limpa tabelas relacionadas
+                # a) upload_payments: seta ebook_id = NULL para não travar FK e manter histórico
+                try:
+                    patch_up_req = Request(
+                        f'{SUPABASE_URL}/rest/v1/upload_payments?ebook_id=eq.{ebook_id}',
+                        data=json.dumps({'ebook_id': None}).encode('utf-8'),
+                        headers={
+                            'apikey': SUPABASE_SR,
+                            'Authorization': f'Bearer {SUPABASE_SR}',
+                            'Content-Type': 'application/json',
+                        },
+                        method='PATCH',
+                    )
+                    with urlopen(patch_up_req, timeout=15):
+                        print(f'[admin-delete] upload_payments desvinculado pra ebook={ebook_id}', flush=True)
+                except Exception as e:
+                    print(f'[admin-delete] WARN desvinculando upload_payments: {e}', flush=True)
+
+                # b) Tabelas relacionadas por ebook_id
+                for table in ('purchases', 'user_library', 'reading_progress', 'reading_sessions', 'ebook_pages'):
                     del_req = Request(
                         f'{SUPABASE_URL}/rest/v1/{table}?ebook_id=eq.{ebook_id}',
                         headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
@@ -1325,37 +1458,74 @@ class Handler(BaseHTTPRequestHandler):
                         with urlopen(del_req, timeout=15):
                             print(f'[admin-delete] {table} limpo pra ebook={ebook_id}', flush=True)
                     except HTTPError as e:
-                        # 404 = tabela não tem nenhuma row, OK prosseguir
                         if e.code != 404:
                             print(f'[admin-delete] WARN limpando {table}: {e.code}', flush=True)
+                    except Exception as e:
+                        print(f'[admin-delete] WARN limpando {table}: {e}', flush=True)
 
-                # 3. Storage best-effort (PDF no bucket 'ebooks' + capa no 'book-covers')
+                # c) Tabelas relacionadas por book_id
+                for table in ('user_quiz_scores', 'web_projects'):
+                    del_req = Request(
+                        f'{SUPABASE_URL}/rest/v1/{table}?book_id=eq.{ebook_id}',
+                        headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+                        method='DELETE',
+                    )
+                    try:
+                        with urlopen(del_req, timeout=15):
+                            print(f'[admin-delete] {table} limpo pra book_id={ebook_id}', flush=True)
+                    except Exception as e:
+                        pass
+
+                # d) Tabelas relacionadas por slug
+                if slug:
+                    for table, col in (('highlights', 'book_slug'), ('chapter_progress', 'book_slug'), ('ebook_reader_counts', 'slug')):
+                        del_req = Request(
+                            f'{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{urllib_quote(slug)}',
+                            headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+                            method='DELETE',
+                        )
+                        try:
+                            with urlopen(del_req, timeout=15):
+                                print(f'[admin-delete] {table} limpo pra {col}={slug}', flush=True)
+                        except Exception as e:
+                            pass
+
+                # 3. Storage best-effort (API batch delete do Supabase: DELETE /storage/v1/object/{bucket})
                 pdf_path = ebook.get('pdf_storage_path') or ''
                 if pdf_path:
                     try:
-                        url_path = urllib_quote(pdf_path, safe='/')
+                        clean_pdf = pdf_path.split('ebooks/', 1)[-1] if pdf_path.startswith('ebooks/') else pdf_path
                         rm_req = Request(
-                            f'{SUPABASE_URL}/storage/v1/object/ebooks/{url_path}',
-                            headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+                            f'{SUPABASE_URL}/storage/v1/object/ebooks',
+                            data=json.dumps({'prefixes': [clean_pdf]}).encode('utf-8'),
+                            headers={
+                                'apikey': SUPABASE_SR,
+                                'Authorization': f'Bearer {SUPABASE_SR}',
+                                'Content-Type': 'application/json',
+                            },
                             method='DELETE',
                         )
                         with urlopen(rm_req, timeout=15):
-                            print(f'[admin-delete] PDF removido: {pdf_path}', flush=True)
+                            print(f'[admin-delete] PDF removido do storage: {clean_pdf}', flush=True)
                     except Exception as e:
                         print(f'[admin-delete] WARN removendo PDF: {e}', flush=True)
+
                 cover = ebook.get('cover_url') or ''
-                # cover_url pode ser absoluto (https://.../book-covers/capa.jpg) — extrai path
                 if 'book-covers/' in cover:
                     cover_path = cover.split('book-covers/', 1)[-1].split('?')[0]
                     try:
-                        url_path = urllib_quote(cover_path, safe='/')
                         rm_req = Request(
-                            f'{SUPABASE_URL}/storage/v1/object/book-covers/{url_path}',
-                            headers={'apikey': SUPABASE_SR, 'Authorization': f'Bearer {SUPABASE_SR}'},
+                            f'{SUPABASE_URL}/storage/v1/object/book-covers',
+                            data=json.dumps({'prefixes': [cover_path]}).encode('utf-8'),
+                            headers={
+                                'apikey': SUPABASE_SR,
+                                'Authorization': f'Bearer {SUPABASE_SR}',
+                                'Content-Type': 'application/json',
+                            },
                             method='DELETE',
                         )
                         with urlopen(rm_req, timeout=15):
-                            print(f'[admin-delete] capa removida: {cover_path}', flush=True)
+                            print(f'[admin-delete] capa removida do storage: {cover_path}', flush=True)
                     except Exception as e:
                         print(f'[admin-delete] WARN removendo capa: {e}', flush=True)
 
@@ -1366,13 +1536,24 @@ class Handler(BaseHTTPRequestHandler):
                     method='DELETE',
                 )
                 with urlopen(del_ebook_req, timeout=15):
-                    print(f'[admin-delete] ebook={ebook_id} (slug={ebook.get("slug")}) removido', flush=True)
+                    print(f'[admin-delete] ebook={ebook_id} (slug={slug}) removido com sucesso', flush=True)
 
                 return self.send_json(200, {
                     'ok': True,
                     'ebook_id': ebook_id,
-                    'slug': ebook.get('slug'),
-                    'message': f'Livro "{ebook.get("slug")}" removido do banco e do storage.',
+                    'slug': slug,
+                    'message': f'Livro "{ebook.get("title") or slug}" removido com sucesso!',
+                })
+            except HTTPError as e:
+                err_body = ''
+                try:
+                    err_body = e.read().decode('utf-8', 'ignore')
+                except Exception:
+                    pass
+                print(f'[admin-delete] HTTPError {e.code}: {e.reason} -> {err_body}', flush=True)
+                traceback.print_exc()
+                return self.send_json(e.code if e.code in (400, 403, 404, 409) else 500, {
+                    'error': f'Erro ao excluir livro ({e.code}): {err_body or e.reason}'
                 })
             except Exception as e:
                 traceback.print_exc()

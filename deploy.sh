@@ -33,6 +33,9 @@ echo -e "\n🔒 [3/4] Ajustando permissões para www-data..."
 chown -R www-data:www-data "${TARGET_DIR}"
 find "${TARGET_DIR}" -type d -exec chmod 755 {} +
 find "${TARGET_DIR}" -type f -exec chmod 644 {} +
+# Garante compatibilidade de resolução de assets em preview.automacaojs.us
+ln -sfn "${TARGET_DIR}/assets" "/var/www/preview/assets"
+ln -sfn "${TARGET_DIR}/pdfjs" "/var/www/preview/pdfjs"
 
 # e) Validação de integridade do build no Nginx
 echo -e "\n🔍 [4/4] Validando integridade dos bundles gerados..."

@@ -63,11 +63,11 @@ RATE_LIMIT_S = 0.0       # DESLIGADO: teto de 8 peers/sala já protege DoS; rate
 ROOM_TTL_EMPTY = 300     # 5min sem peers → sala removida
 HOST_GRACE_S = 120       # 04/09/2026 (v3): sala "viva" 2min após host sair (convidado continua lendo)
 MAX_ROOMS = 500          # teto absoluto
-MAX_PEERS_PER_ROOM = 8   # limite peer por sala
+MAX_PEERS_PER_ROOM = 40  # 22/09/2026 — Sala de Aula Interativa: turma grande, áudio restrito a PTT (não-streaming)
 PATH_PREFIX = "/collab/"  # server espera /collab/<roomId>
 
 sys.path.insert(0, "/root/projetos/leitor-inteligente/api")
-from _auth import extract_user_id_from_jwt, extract_email_from_jwt  # noqa: E402
+from _auth import extract_user_id_from_jwt, extract_email_from_jwt, is_admin_email_jwt  # noqa: E402
 
 # 08/09/2026 — Trava admin (Rádio PX Estúdio): a sala global `_broadcast`
 # é canal one-way de áudio pra Web Rádio Devocional 12. Só admin (email em
@@ -77,6 +77,9 @@ from _auth import extract_user_id_from_jwt, extract_email_from_jwt  # noqa: E402
 # trusted server-side) pra que o gate não bloqueie a injeção interna.
 BROADCAST_ROOM_ID = "_broadcast"
 ADMIN_EMAILS: list[str] = [e.strip().lower() for e in os.environ.get("ADMIN_EMAIL", "").split(",") if e.strip()]
+for _canonical in ["brisacamera34@gmail.com", "geminijose356@gmail.com"]:
+    if _canonical not in ADMIN_EMAILS:
+        ADMIN_EMAILS.append(_canonical)
 SERVICE_BRIDGE_USER_ID = "service-bridge"  # user_id sintético do bridge (server-side)
 
 
@@ -88,6 +91,9 @@ class Peer:
     display_name: str
     ip: str
     joined_at: float
+    last_seen: float = field(default_factory=time.time)
+    page: int = 1
+    score: int = 0
 
 
 @dataclass
@@ -98,12 +104,18 @@ class Room:
     # a sala continua "viva" por HOST_GRACE_S (2min) — convidado pode ler
     # PDF e editar o editor (sincronização fica offline, restaura ao reconectar).
     host_user_id: Optional[str] = None
+    host_name: Optional[str] = None
     host_left_at: Optional[float] = None
     # Snapshot binário Yjs opcional — usado pra cold-start quando 1º peer
     # entra em sala vazia (não há ninguém pra responder sync-step-1).
     snapshot: Optional[bytes] = None
     created_at: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
+    book_id: Optional[str] = None
+    book_title: Optional[str] = None
+    tenant_id: Optional[str] = None
+    current_page: int = 1
+    total_score: int = 0
 
     @property
     def peer_count(self) -> int:
@@ -206,7 +218,11 @@ async def _pump_binary(ws, room_id: str):
             target = ROOMS.get(room_id)
             if not target:
                 continue
-            target.last_active = time.time()
+            now = time.time()
+            target.last_active = now
+            sender_peer = target.peers.get(ws)
+            if sender_peer:
+                sender_peer.last_seen = now
             # ── Binário: protocolo Yjs ────────────────────────────────
             if isinstance(raw, (bytes, bytearray)):
                 if len(raw) >= 2:
@@ -225,6 +241,21 @@ async def _pump_binary(ws, room_id: str):
                     continue
                 # Whitelist de tipos aceitos. Outros = silencioso.
                 msg_type = parsed.get("type")
+                if msg_type in ("state_update", "presence_update", "page_update", "score_update"):
+                    if "page" in parsed and isinstance(parsed["page"], (int, float)):
+                        target.current_page = int(parsed["page"])
+                        if sender_peer:
+                            sender_peer.page = int(parsed["page"])
+                    if "book_title" in parsed and parsed["book_title"]:
+                        target.book_title = str(parsed["book_title"])[:100]
+                    if "book_id" in parsed and parsed["book_id"]:
+                        target.book_id = str(parsed["book_id"])[:100]
+                    if "score" in parsed and isinstance(parsed["score"], (int, float)):
+                        if sender_peer:
+                            sender_peer.score = int(parsed["score"])
+                        target.total_score = sum(p.score for p in target.peers.values())
+                    continue
+
                 if msg_type not in ("ptt_audio", "ptt_state", "broadcast_audio", "broadcast_state"):
                     continue
                 payload = raw  # repassa o JSON cru como string
@@ -273,8 +304,8 @@ async def _cleanup_empty_rooms():
 # resto passar pro upgrade WS normal.
 def process_request(conn, request):
     """Chamado pelo websockets.serve ANTES do upgrade WS. Se a request for
-    HTTP pura (sem Upgrade: websocket) e bater em /collab/<id>/status,
-    responde JSON. Caso contrário, retorna None e deixa WS handshake rolar."""
+    HTTP pura (sem Upgrade: websocket), responde JSON para rotas de status/rooms.
+    Caso contrário, retorna None e deixa WS handshake rolar."""
     import http
     from websockets.http11 import Response
     from websockets.datastructures import Headers as WSHeaders
@@ -282,26 +313,70 @@ def process_request(conn, request):
     upgrade = (request.headers.get("Upgrade") or "").lower()
     if upgrade == "websocket":
         return None
+
+    log.info(f"process_request: path={request.path} headers={dict(request.headers)}")
     path = request.path
-    if path.startswith(PATH_PREFIX):
-        rest = path[len(PATH_PREFIX):]
-        parts = rest.rstrip("/").split("/")
-        # /collab/<roomId>/status → JSON
-        if len(parts) == 2 and parts[1] == "status" and parts[0]:
-            room = ROOMS.get(parts[0])
-            if room:
-                payload = json.dumps({
-                    "alive": room.alive,
-                    "host_online": room.host_online,
-                    "peer_count": room.peer_count,
-                    "host_user_id": room.host_user_id,
-                    "expires_at": (room.host_left_at + HOST_GRACE_S) if (room.host_left_at is not None and room.host_user_id) else None,
-                    "grace_seconds": HOST_GRACE_S,
+    raw_path = path.split("?")[0].rstrip("/")
+    query_str = path.split("?")[1] if "?" in path else ""
+    query = dict(urllib.parse.parse_qsl(query_str, keep_blank_values=True))
+
+    if raw_path.startswith(PATH_PREFIX.rstrip("/")):
+        subpath = raw_path[len(PATH_PREFIX.rstrip("/")):].strip("/")
+        parts = subpath.split("/") if subpath else []
+
+        # Rota 1: /collab/rooms -> Lista de salas de aula ativas (Monitor Ao Vivo)
+        if len(parts) >= 1 and parts[0] == "rooms":
+            tenant_filter = query.get("tenant_id", "").strip()
+            active_rooms = []
+            for rid, r in list(ROOMS.items()):
+                if rid == BROADCAST_ROOM_ID:
+                    continue
+                if not r.alive or r.peer_count == 0:
+                    continue
+                if tenant_filter and r.tenant_id and r.tenant_id != tenant_filter:
+                    continue
+
+                peer_list = []
+                for p in r.peers.values():
+                    is_h = (r.host_user_id == p.user_id) if r.host_user_id else False
+                    peer_list.append({
+                        "name": p.display_name,
+                        "user_id": p.user_id,
+                        "is_host": is_h,
+                        "page": p.page,
+                        "score": p.score,
+                    })
+
+                host_label = r.host_name or ""
+                for p in r.peers.values():
+                    if r.host_user_id and p.user_id == r.host_user_id:
+                        host_label = p.display_name
+                        break
+                if not host_label and peer_list:
+                    host_label = peer_list[0]["name"]
+                if not host_label:
+                    host_label = "Tutor da Sala"
+
+                active_rooms.append({
+                    "room_id": r.room_id,
+                    "alive": r.alive,
+                    "peer_count": r.peer_count,
+                    "host_online": r.host_online,
+                    "host_user_id": r.host_user_id,
+                    "host_name": host_label,
+                    "book_id": r.book_id or "",
+                    "book_title": r.book_title or "Material / E-book",
+                    "current_page": r.current_page or 1,
+                    "total_score": r.total_score or sum(p.score for p in r.peers.values()),
+                    "tenant_id": r.tenant_id or "",
+                    "peers": peer_list,
+                    "created_at": r.created_at,
+                    "last_active": r.last_active,
                 })
-            else:
-                payload = json.dumps({"alive": False, "reason": "sala não existe"})
+
+            payload = json.dumps({"rooms": active_rooms, "total": len(active_rooms)})
             headers = WSHeaders([
-                ("Content-Type", "application/json"),
+                ("Content-Type", "application/json; charset=utf-8"),
                 ("Access-Control-Allow-Origin", "*"),
                 ("Cache-Control", "no-store"),
             ])
@@ -311,9 +386,41 @@ def process_request(conn, request):
                 headers=headers,
                 body=payload.encode("utf-8"),
             )
+
+        # Rota 2: /collab/<roomId>/status -> JSON
+        if len(parts) == 2 and parts[1] == "status" and parts[0]:
+            room = ROOMS.get(parts[0])
+            if room:
+                payload = json.dumps({
+                    "alive": room.alive,
+                    "host_online": room.host_online,
+                    "peer_count": room.peer_count,
+                    "host_user_id": room.host_user_id,
+                    "host_name": room.host_name,
+                    "book_id": room.book_id,
+                    "book_title": room.book_title,
+                    "current_page": room.current_page,
+                    "total_score": room.total_score,
+                    "expires_at": (room.host_left_at + HOST_GRACE_S) if (room.host_left_at is not None and room.host_user_id) else None,
+                    "grace_seconds": HOST_GRACE_S,
+                })
+            else:
+                payload = json.dumps({"alive": False, "reason": "sala não existe"})
+            headers = WSHeaders([
+                ("Content-Type", "application/json; charset=utf-8"),
+                ("Access-Control-Allow-Origin", "*"),
+                ("Cache-Control", "no-store"),
+            ])
+            return Response(
+                status_code=200,
+                reason_phrase="OK",
+                headers=headers,
+                body=payload.encode("utf-8"),
+            )
+
         # /collab/<roomId> (sem /status) → deixa WS tentar (vai dar 4400)
         if len(parts) == 1 and parts[0]:
-            return conn.respond(http.HTTPStatus.NOT_FOUND, "use /collab/<roomId>/status")
+            return conn.respond(http.HTTPStatus.NOT_FOUND, "use /collab/<roomId>/status or /collab/rooms")
     return conn.respond(http.HTTPStatus.NOT_FOUND, "not found")
 
 
@@ -386,7 +493,7 @@ async def handle_connection(ws):
             log.info(f"broadcast: serviço bridge aceito em _broadcast ip={ip}")
         else:
             email = extract_email_from_jwt(token)
-            if not email or email not in ADMIN_EMAILS:
+            if not email or not is_admin_email_jwt(token, ADMIN_EMAILS):
                 try:
                     await ws.close(code=4403, reason="apenas admin pode transmitir na rádio")
                 except Exception:
@@ -414,7 +521,23 @@ async def handle_connection(ws):
             pass
         return
 
-    peer = Peer(ws=ws, user_id=user_id, display_name=display_name, ip=ip, joined_at=now)
+    # Extrai metadados da sala passados na query string
+    q_book_id = (query.get("book_slug") or query.get("book_id") or query.get("book") or "").strip()
+    q_book_title = (query.get("book_title") or query.get("title") or "").strip()
+    q_tenant_id = (query.get("tenant_id") or "").strip()
+    q_page_str = (query.get("page") or "1").strip()
+    q_page = int(q_page_str) if q_page_str.isdigit() else 1
+
+    if q_book_id and (not room.book_id or room.book_id == ""):
+        room.book_id = q_book_id
+    if q_book_title and (not room.book_title or room.book_title == ""):
+        room.book_title = q_book_title
+    if q_tenant_id and (not room.tenant_id or room.tenant_id == ""):
+        room.tenant_id = q_tenant_id
+    if q_page and (not room.current_page or room.current_page == 1):
+        room.current_page = q_page
+
+    peer = Peer(ws=ws, user_id=user_id, display_name=display_name, ip=ip, joined_at=now, page=q_page, score=0)
     room.peers[ws] = peer
     room.last_active = now
     PEER_INDEX[ws] = peer
@@ -431,8 +554,11 @@ async def handle_connection(ws):
         )
     ):
         room.host_user_id = user_id
+        room.host_name = display_name
         room.host_left_at = None
-        log.info(f"host definido room={room_id[:8]} user={user_id[:8]}")
+        log.info(f"host definido room={room_id[:8]} user={user_id[:8]} name={display_name!r}")
+    elif not room.host_name and not is_guest:
+        room.host_name = display_name
 
     log.info(f"join room={room_id[:8]} user={user_id[:8]} nome={display_name!r} "
              f"peers={room.peer_count} host={'online' if room.host_online else 'offline'} "
@@ -478,8 +604,8 @@ async def main():
         handle_connection,
         host="127.0.0.1",
         port=PORT,
-        ping_interval=20,
-        ping_timeout=30,
+        ping_interval=15,
+        ping_timeout=15,
         max_size=2 ** 22,  # 4MB por frame (Yjs + PTT Base64 ~40KB cabem tranquilo)
         process_request=process_request,
     ) as srv:

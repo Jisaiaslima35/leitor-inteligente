@@ -25,12 +25,16 @@ import { DevPage } from './pages/DevPage'
 import { CheckoutModal } from './components/CheckoutModal'
 import { AmbientRadioPlayer } from './components/AmbientRadioPlayer'
 import { CampaignPage } from './pages/CampaignPage'
+import { AcademicManagerPage } from './pages/AcademicManagerPage'
+import { ToastContainer } from './components/Toast'
+import { showToast } from './lib/toast'
 import { getCampanhaBySlug } from './data/campaigns'
 import { AuthProvider, useAuth } from './lib/AuthContext'
 import { supabase, SUPABASE_READY } from './lib/supabase'
 import { isAdminEmail, isAdminUser } from './lib/admin'
+import { TenantProvider, useTenant } from './lib/tenant'
 
-export type Route = 'home' | 'store' | 'library' | 'reader' | 'admin' | 'login' | 'upload' | 'comprar' | 'dev' | 'campaign'
+export type Route = 'home' | 'store' | 'library' | 'reader' | 'admin' | 'login' | 'upload' | 'comprar' | 'dev' | 'campaign' | 'academic'
 
 const PENDING_BUY_KEY = 'leitor-ia:pending-buy'
 
@@ -56,7 +60,7 @@ function clearPendingBuy() {
   try { sessionStorage.removeItem(PENDING_BUY_KEY) } catch { /* sem sessionStorage */ }
 }
 
-const PROTECTED: Route[] = ['library', 'reader', 'admin', 'upload']
+const PROTECTED: Route[] = ['library', 'reader', 'admin', 'upload', 'academic']
 
 /** Lê o hash e também extrai `?src=...` (traffic source da campanha) e
  *  `?room=<uuid>` (Painel de Estudo em Dupla).
@@ -104,6 +108,7 @@ function readRoute(): {
 
 function InnerApp() {
   const { user, isAuthenticated, isReady, signOut } = useAuth()
+  const { tenant, isEmbed } = useTenant()
   const [{ route, bookId, trafficSource, room }, setRouteState] = useState(() => readRoute())
   // Inicializa vazio; o useEffect de sync popula quando autenticado
   const [library, setLibrary] = useState<LibraryState>({ purchases: [] })
@@ -172,8 +177,22 @@ function InnerApp() {
 
   const navigate = useCallback(
     (nextRoute: Route, nextBookId?: string) => {
+      // Bloqueia rotas administrativas, upload institucional legado e campanhas no modo embed.
+      // A rota 'dev' (Sala Dev) É permitida no modo embed para livros de programação.
+      if (isEmbed && (nextRoute === 'admin' || nextRoute === 'upload' || nextRoute === 'campaign')) {
+        const fallbackRoute = isAuthenticated ? 'library' : 'store'
+        window.location.hash = `#/${fallbackRoute}`
+        setRouteState({ route: fallbackRoute })
+        return
+      }
       // Bloqueia rotas protegidas quando não autenticado
       if (PROTECTED.includes(nextRoute) && !isAuthenticated) {
+        if (nextRoute === 'academic') {
+          showToast('Acesso restrito à coordenação pedagógica', 'warning')
+          window.location.hash = '#/library'
+          setRouteState({ route: 'library' })
+          return
+        }
         window.location.hash = '#/login'
         setRouteState({ route: 'login' })
         return
@@ -193,8 +212,16 @@ function InnerApp() {
       setRouteState({ route: nextRoute, bookId: nextBookId })
       if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
     },
-    [isAuthenticated, user.email, user.id],
+    [isEmbed, isAuthenticated, user.email, user.id],
   )
+
+  // Em modo embed, direciona a home para library ou store
+  useEffect(() => {
+    if (isEmbed && route === 'home') {
+      const target = isAuthenticated ? 'library' : 'store'
+      navigate(target)
+    }
+  }, [isEmbed, route, isAuthenticated, navigate])
 
   // Vitrine = Supabase (filtro server-side admin+publicado+preço>0).
   // O CATALOG hardcoded foi desativado em src/domain/catalog.ts — não usar mais.
@@ -349,7 +376,7 @@ function InnerApp() {
       {/* 07/09/2026 v15: player ambiente da Web Rádio Devocional 12 no header
           direito — toca em qualquer rota do Leitor com volume baixo + ducking
           automático quando alguém fala no Rádio PX. */}
-      <AmbientRadioPlayer />
+      {!isEmbed && <AmbientRadioPlayer />}
       <main className="page">
         {showSyncLoading && (
           <div className="sync-loading">
@@ -438,20 +465,20 @@ function InnerApp() {
             </div>
           </section>
         )}
-        {route === 'dev' && isAuthenticated && activeBook && activeBook.categoria !== 'programacao' && (
+        {route === 'dev' && isAuthenticated && activeBook && activeBook.categoria !== 'programacao' && activeBook.categoria !== 'tecnologia' && (
           // 23/08/2026: trava de acesso. Livro não-programação tentou abrir
           // /dev/<slug> direto pela URL. Não chama API, não carrega DevPage,
           // não desperdiça tokens. Só mostra mensagem amigável.
           <section className="dev-blocked">
             <h2>🔒 Sala Dev restrita</h2>
-            <p>Esta seção é exclusiva para livros de <strong>programação</strong>.</p>
+            <p>Esta seção é exclusiva para livros de <strong>programação e tecnologia</strong>.</p>
             <p>O livro <em>"{activeBook.title}"</em> é da categoria <code>{activeBook.categoria}</code>.</p>
             <button className="btn btn-primary" onClick={() => navigate(activeBook ? 'reader' : 'library')}>
               ← Voltar à leitura
             </button>
           </section>
         )}
-        {route === 'dev' && isAuthenticated && (!activeBook || activeBook.categoria === 'programacao') && (
+        {route === 'dev' && isAuthenticated && (!activeBook || activeBook.categoria === 'programacao' || activeBook.categoria === 'tecnologia') && (
           <DevPage
             book={activeBook}
             // 23/08/2026: precisa passar bookId pro navigate, senão o reader
@@ -534,6 +561,9 @@ function InnerApp() {
             />
           )
         })()}
+        {route === 'academic' && (
+          <AcademicManagerPage onNavigate={navigate} />
+        )}
           </>
         )}
       </main>
@@ -545,14 +575,17 @@ function InnerApp() {
           onConfirm={handleConfirmCheckout}
         />
       )}
+      <ToastContainer />
     </div>
   )
 }
 
 export function App() {
   return (
-    <AuthProvider>
-      <InnerApp />
-    </AuthProvider>
+    <TenantProvider>
+      <AuthProvider>
+        <InnerApp />
+      </AuthProvider>
+    </TenantProvider>
   )
 }

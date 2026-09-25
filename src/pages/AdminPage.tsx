@@ -11,6 +11,7 @@ import { CategoriaRadioGroup, isCategoriaValida } from '../components/CategoriaR
 import { MentorSkillsPanel } from '../components/MentorSkillsPanel'
 import { ADMIN_USER_ID, isAdminEmail, isAdminUser } from '../lib/admin'
 import { BASE_URL } from '../lib/baseUrl'
+import { useTenant } from '../lib/tenant'
 
 // 06/09/2026 v14 (segurança pré-divulgação): removido ADMIN_TOKEN hardcoded.
 // Toda chamada admin agora envia `Authorization: Bearer <jwt>` da sessão
@@ -80,6 +81,7 @@ function formatDate(iso?: string | null) {
 type Tab = 'overview' | 'users' | 'purchases' | 'ebooks' | 'mentor'
 
 export function AdminPage({ library, progress, user, onReset }: Props) {
+  const { tenant } = useTenant()
   const [tab, setTab] = useState<Tab>('overview')
   const [profiles, setProfiles] = useState<ProfileRow[]>([])
   const [purchases, setPurchases] = useState<PurchaseRow[]>([])
@@ -316,6 +318,9 @@ export function AdminPage({ library, progress, user, onReset }: Props) {
       form.append('price_cents', uploadPrice || '0')
       form.append('is_published', String(uploadPublishing))
       form.append('categoria', uploadCategoria)
+      if (tenant?.id) {
+        form.append('tenant_id', tenant.id)
+      }
       // v14.1: Authorization Bearer (sem X-Admin-Token/admin_token estático)
       const resp = await fetch(`${BASE_URL}upload-api/api/admin/upload-book`, {
         method: 'POST',

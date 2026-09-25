@@ -120,13 +120,72 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       },
       signInWithGoogle: async () => {
         if (!SUPABASE_READY) return { ok: false, error: 'Supabase não configurado' }
+        const isIframe = typeof window !== 'undefined' && (window !== window.top || window.location.search.includes('mode=embed'))
+        const redirectUrl = `${window.location.origin}${window.location.pathname}`
+
+        if (isIframe) {
+          // No modo embed/iframe o Google bloqueia OAuth direto com erro 403 (X-Frame-Options)
+          // Geramos a URL e abrimos em popup isolado
+          const { data, error } = await supabase.auth.signInWithOAuth({
+            provider: 'google',
+            options: {
+              redirectTo: redirectUrl,
+              skipBrowserRedirect: true,
+              queryParams: {
+                prompt: 'select_account',
+              },
+            },
+          })
+          if (error || !data?.url) {
+            return { ok: false, error: error?.message || 'Falha ao iniciar autenticação Google' }
+          }
+
+          const width = 500
+          const height = 650
+          const left = Math.max(0, (window.screen.width - width) / 2)
+          const top = Math.max(0, (window.screen.height - height) / 2)
+          const popup = window.open(
+            data.url,
+            'google_oauth_popup',
+            `width=${width},height=${height},top=${top},left=${left},status=no,toolbar=no,menubar=no`
+          )
+
+          return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+            let resolved = false
+            const checkSession = async () => {
+              const { data: sessData } = await supabase.auth.getSession()
+              if (sessData?.session && !resolved) {
+                resolved = true
+                clearInterval(timer)
+                if (popup && !popup.closed) popup.close()
+                setSession(sessData.session)
+                setSupabaseUser(sessData.session.user)
+                resolve({ ok: true })
+                return true
+              }
+              return false
+            }
+
+            const timer = setInterval(async () => {
+              const ok = await checkSession()
+              if (!ok && popup?.closed) {
+                clearInterval(timer)
+                setTimeout(async () => {
+                  if (!resolved) {
+                    const finalOk = await checkSession()
+                    if (!finalOk) resolve({ ok: false, error: 'Login pelo Google foi cancelado ou fechado' })
+                  }
+                }, 500)
+              }
+            }, 800)
+          })
+        }
+
+        // Fluxo padrão fora de iframe
         const { error } = await supabase.auth.signInWithOAuth({
           provider: 'google',
           options: {
-            redirectTo: `${window.location.origin}${window.location.pathname}`,
-            // Força o seletor de contas do Google (não auto-selecionar a do perfil).
-            // Equivalente ao prompt=select_account da OAuth2 spec, repassado pelo
-            // Supabase ao authorization endpoint do Google.
+            redirectTo: redirectUrl,
             queryParams: {
               prompt: 'select_account',
             },

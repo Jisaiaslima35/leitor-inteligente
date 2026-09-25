@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { LogIn, Mail, KeyRound, ArrowLeft, ShieldCheck } from 'lucide-react'
 import { useAuth } from '../lib/AuthContext'
+import { useTenant } from '../lib/tenant'
+import { supabase } from '../lib/supabase'
 
 interface Props {
   onBack: () => void
@@ -25,6 +27,7 @@ export function LoginPage({ onBack, onSuccess }: Props) {
   // pelo listener onAuthStateChange no App.tsx — não precisa tratar aqui.
   // Esta página só cuida do formulário de autenticação.
   const { signInWithMagicLink, signInWithPassword, signUpWithPassword, signInWithGoogle, isAuthenticated } = useAuth()
+  const { tenant } = useTenant()
   const [mode, setMode] = useState<Mode>('magic')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -79,14 +82,62 @@ export function LoginPage({ onBack, onSuccess }: Props) {
           if (r.needsConfirmation) {
             setMessage({ kind: 'ok', text: `Conta criada! Confirme no e-mail ${email} pra ativar.` })
           } else {
-            setMessage({ kind: 'ok', text: 'Conta criada e logado!' })
+            // Vincula explicitamente o tenant_id = currentTenantId
+            if (tenant?.id) {
+              try {
+                await supabase.rpc('register_tenant_member', { p_tenant_id: tenant.id })
+              } catch {}
+            }
+            setMessage({ kind: 'ok', text: 'Conta criada e vinculada a esta instituição!' })
           }
         } else {
           setMessage({ kind: 'err', text: r.error ?? 'Falha ao cadastrar' })
         }
       } else {
         const r = await signInWithPassword(email.trim(), password)
-        setMessage(r.ok ? { kind: 'ok', text: 'Logado!' } : { kind: 'err', text: r.error ?? 'Falha ao entrar' })
+        if (!r.ok) {
+          setMessage({ kind: 'err', text: r.error ?? 'Falha ao entrar' })
+          return
+        }
+
+        // 4. ISOLAMENTO DE USUÁRIOS POR TENANT (MEMBER CHECK)
+        if (tenant && tenant.slug !== 'raiz') {
+          const { data: sessData } = await supabase.auth.getSession()
+          const uid = sessData.session?.user?.id
+          const userEmail = sessData.session?.user?.email?.toLowerCase()
+
+          if (uid) {
+            const isAdmin = uid === '4c347fb6-e66e-4993-b69e-93e966ef8455' || userEmail === 'brisacamera34@gmail.com'
+
+            if (!isAdmin) {
+              // Checagem na tabela tenant_members
+              const { data: member } = await supabase
+                .from('tenant_members')
+                .select('user_id')
+                .eq('user_id', uid)
+                .eq('tenant_id', tenant.id)
+                .maybeSingle()
+
+              if (!member) {
+                // 1. Desconectar a sessão imediatamente
+                await supabase.auth.signOut()
+                // 2. Exibir erro em tela
+                setMessage({
+                  kind: 'err',
+                  text: 'Cadastro não encontrado nesta instituição. Crie sua conta para acessar.',
+                })
+                return
+              }
+            }
+
+            // Se é membro válido ou admin, atualiza o current_tenant_id no profile
+            try {
+              await supabase.rpc('register_tenant_member', { p_tenant_id: tenant.id })
+            } catch {}
+          }
+        }
+
+        setMessage({ kind: 'ok', text: 'Logado!' })
       }
     } finally {
       setSubmitting(false)
@@ -112,7 +163,13 @@ export function LoginPage({ onBack, onSuccess }: Props) {
             setSubmitting(true)
             setMessage(null)
             const r = await signInWithGoogle()
-            if (!r.ok) setMessage({ kind: 'err', text: r.error ?? 'Falha ao entrar com Google' })
+            if (!r.ok) {
+              setMessage({ kind: 'err', text: r.error ?? 'Falha ao entrar com Google' })
+            } else if (tenant?.id) {
+              try {
+                await supabase.rpc('register_tenant_member', { p_tenant_id: tenant.id })
+              } catch {}
+            }
             setSubmitting(false)
           }}
           disabled={submitting}

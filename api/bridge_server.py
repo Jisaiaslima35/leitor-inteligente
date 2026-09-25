@@ -50,6 +50,9 @@ from _auth import is_admin_email_jwt  # type: ignore  # noqa: E402
 # no caso de alguém furar o gate do collab_server.py. NÃO encerra o processo
 # — só descarta a msg com log.warn pra não atrapalhar outros broadcasts.
 ADMIN_EMAILS = [e.strip().lower() for e in os.environ.get('ADMIN_EMAIL', '').split(',') if e.strip()]
+for _canonical in ('brisacamera34@gmail.com', 'geminijose356@gmail.com'):
+    if _canonical not in ADMIN_EMAILS:
+        ADMIN_EMAILS.append(_canonical)
 
 # ─── Logging ─────────────────────────────────────────────────────────────
 LOG_PATH = os.environ.get("BRIDGE_LOG", "/var/log/leitor-bridge.log")

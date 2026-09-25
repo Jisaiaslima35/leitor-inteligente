@@ -6,7 +6,12 @@ import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { COLOR_BG, type HighlightColor, type SelectionInfo } from './SelectionToolbar'
 import type { Highlight } from './AnnotationModal'
 
-pdfjs.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}assets/${workerUrl.split('/').pop()}`
+// Caminho canônico relativo dos assets do PDF.js resolvido a partir da raiz
+const basePath = (import.meta.env.BASE_URL || '/').replace(/\/$/, '')
+export const pdfjsBasePath = `${basePath}/assets/pdfjs`
+
+// Configura o worker oficial do PDF.js
+pdfjs.GlobalWorkerOptions.workerSrc = `${pdfjsBasePath}/pdf.worker.min.mjs`
 
 interface Props {
   pdfPath: string
@@ -43,9 +48,23 @@ export function PdfViewer({ pdfPath, page, onPageChange, onInternalNav, scale = 
   useEffect(() => {
     let cancelled = false
     setStatus('loading')
-    pdfjs
-      .getDocument({ url: pdfPath, disableStream: true, disableAutoFetch: true })
-      .promise.then((doc) => {
+
+    // Assegura worker configurado
+    pdfjs.GlobalWorkerOptions.workerSrc = `${pdfjsBasePath}/pdf.worker.min.mjs`
+
+    const loadingTask = pdfjs.getDocument({
+      url: pdfPath,
+      disableStream: true,
+      disableAutoFetch: true,
+      cMapUrl: `${pdfjsBasePath}/cmaps/`,
+      cMapPacked: true,
+      standardFontDataUrl: `${pdfjsBasePath}/standard_fonts/`,
+      wasmUrl: `${pdfjsBasePath}/wasm/`,
+      stopAtErrors: false,
+    })
+
+    loadingTask.promise
+      .then((doc) => {
         if (cancelled) return
         docRef.current = doc
         setStatus('ready')
@@ -55,8 +74,12 @@ export function PdfViewer({ pdfPath, page, onPageChange, onInternalNav, scale = 
         setStatus('error')
         setErrorMsg(err.message || 'Falha ao carregar PDF')
       })
+
     return () => {
       cancelled = true
+      try {
+        loadingTask.destroy()
+      } catch {}
       docRef.current = null
     }
   }, [pdfPath])
@@ -81,9 +104,27 @@ export function PdfViewer({ pdfPath, page, onPageChange, onInternalNav, scale = 
       canvas.width = viewport.width
       canvas.height = viewport.height
       renderTaskRef.current?.cancel()
-      const task = pageObj.render({ canvas, canvasContext: context, viewport })
+
+      // Renderização gráfica no canvas
+      const task = pageObj.render({
+        canvas,
+        canvasContext: context,
+        viewport,
+        annotationMode: 0, // Desativa renderização de formulários interativos que possam travar o canvas
+      })
       renderTaskRef.current = task
-      await task.promise
+
+      // Tratamento não bloqueante: se alguma imagem compactada (JPX/JPEG 2000) falhar,
+      // não interrompe o fluxo para permitir que vetores e textLayer sejam renderizados
+      try {
+        await task.promise
+      } catch (renderErr: any) {
+        if (renderErr?.name === 'RenderingCancelledException') {
+          return
+        }
+        console.warn('Aviso na renderização gráfica (recuperando texto/vetores da página):', renderErr)
+      }
+
       if (cancelled) return
       // Sinaliza navegação interna (page-by-page via scroll do PDF, futuro)
       const navCb = onInternalNavRef.current
@@ -153,7 +194,14 @@ export function PdfViewer({ pdfPath, page, onPageChange, onInternalNav, scale = 
   return (
     <div
       className="pdf-canvas-wrap"
-      style={{ position: 'relative', display: 'inline-block' }}
+      style={{
+        position: 'relative',
+        display: 'flex',
+        justifyContent: 'center',
+        width: '100%',
+        maxWidth: '100%',
+        boxSizing: 'border-box',
+      }}
     >
       <canvas ref={canvasRef} aria-label={`Página ${page}`} />
       <div

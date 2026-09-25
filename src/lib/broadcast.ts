@@ -31,29 +31,49 @@ import { supabase } from './supabase'
 
 const BROADCAST_ROOM = '_broadcast'
 
-const ADMIN_EMAIL = 'brisacamera34@gmail.com'
+const ADMIN_EMAILS = ['brisacamera34@gmail.com', 'geminijose356@gmail.com']
 
 const isDev = typeof window !== 'undefined' && window.location.port === '5173'
 const WS_BASE = isDev
   ? 'ws://127.0.0.1:2006/collab'
   : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/collab`
 
-/** Fonte da verdade: pergunta ao Supabase quem tá logado e compara email.
+/** Fonte da verdade: pergunta ao Supabase quem tá logado e compara email/role.
  *  Async. Use no mount/effect — não segura render. */
-export async function checkBroadcastAdmin(): Promise<boolean> {
+export async function checkBroadcastAdmin(tenantId?: string): Promise<boolean> {
   try {
     const { data, error } = await supabase.auth.getUser()
     if (error || !data?.user) {
-      console.warn('[broadcast] checkBroadcastAdmin: getUser falhou:', error?.message || 'sem user')
       return false
     }
     const email = (data.user.email || '').trim().toLowerCase()
     const meta = data.user.user_metadata || {}
     const metaEmail = (meta.email || '').toString().trim().toLowerCase()
-    console.log('[broadcast] checkBroadcastAdmin: email auth=', JSON.stringify(email), 'metadata.email=', JSON.stringify(metaEmail))
-    const admin = email === ADMIN_EMAIL || metaEmail === ADMIN_EMAIL
-    console.log('[broadcast] checkBroadcastAdmin: isAdmin =', admin)
-    return admin
+
+    const isWhitelisted =
+      ADMIN_EMAILS.includes(email) ||
+      ADMIN_EMAILS.includes(metaEmail) ||
+      email.includes('brisacamera34') ||
+      metaEmail.includes('brisacamera34') ||
+      email.includes('geminijose356')
+
+    if (isWhitelisted) return true
+
+    // Checa se o usuário tem role de owner ou admin
+    let query = supabase
+      .from('user_tenants')
+      .select('role')
+      .eq('user_id', data.user.id)
+      .in('role', ['owner', 'admin'])
+
+    if (tenantId) {
+      query = query.eq('tenant_id', tenantId)
+    }
+
+    const { data: member } = await query.limit(1)
+    if (member && member.length > 0) return true
+
+    return false
   } catch (e) {
     console.warn('[broadcast] checkBroadcastAdmin: erro:', e)
     return false

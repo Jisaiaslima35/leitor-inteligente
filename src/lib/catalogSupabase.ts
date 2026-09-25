@@ -29,6 +29,11 @@ export interface SupabaseEbook {
   is_published: boolean
   owner_user_id: string | null
   categoria: string | null
+  toc?: [number, string, number][]
+  modo_mentor_habilitado?: boolean
+  hook_abertura?: string | null
+  prompt_mentor?: string | null
+  voz_id?: string | null
 }
 
 export interface CatalogFetchResult {
@@ -42,17 +47,23 @@ export interface CatalogFetchResult {
  * Se Supabase falhar OU retornar vazio, retorna lista vazia (sem fallback
  * hardcoded). App mostra estado vazio honesto em vez de vazar ebooks privados.
  */
-export async function loadCatalogFromSupabase(): Promise<CatalogFetchResult> {
+export async function loadCatalogFromSupabase(tenantId?: string): Promise<CatalogFetchResult> {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     return { books: [], error: 'supabase_env_ausente' }
   }
   try {
-    const url =
+    let url =
       `${SUPABASE_URL}/rest/v1/ebooks?is_published=eq.true` +
-      `&owner_user_id=eq.${ADMIN_USER_ID}` +
       `&price_cents=gt.0` +
-      `&select=id,slug,title,author,description,cover_url,price_cents,total_pages,categoria` +
+      `&select=id,slug,title,author,description,cover_url,price_cents,total_pages,categoria,toc,modo_mentor_habilitado,hook_abertura,prompt_mentor,voz_id` +
       `&order=created_at.desc&limit=200`
+    
+    if (tenantId) {
+      url += `&or=(tenant_id.eq.${tenantId},is_public.eq.true,tenant_id.is.null)`
+    } else {
+      // Fallback para o tenant raiz padrão e livros públicos/sem tenant
+      url += `&or=(is_public.eq.true,tenant_id.is.null,tenant_id.eq.2656ae53-fbb0-4478-ab1a-36f3561d51df)`
+    }
     const resp = await fetch(url, {
       headers: {
         apikey: SUPABASE_ANON_KEY,
@@ -74,9 +85,12 @@ export async function loadCatalogFromSupabase(): Promise<CatalogFetchResult> {
       totalPages: row.total_pages,
       highlights: [],
       chunks: [],
-      // 23/08/2026: novo campo. Default 'outros' se vier NULL ou inválido
-      // (proteção pra livros antigos cadastrados antes da migration).
       categoria: (row.categoria && VALID.has(row.categoria) ? row.categoria : 'outros') as Categoria,
+      toc: row.toc,
+      modoMentorHabilitado: Boolean(row.modo_mentor_habilitado),
+      hookAbertura: row.hook_abertura || undefined,
+      promptMentor: row.prompt_mentor || undefined,
+      vozId: row.voz_id || undefined,
     }))
     return { books, error: null }
   } catch (err: any) {

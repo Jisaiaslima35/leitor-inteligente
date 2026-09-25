@@ -49,6 +49,14 @@ export interface Book {
   categoria: Categoria
   /** Sumário estruturado hierárquico [[nivel, titulo, pagina], ...] extraído nativamente via PyMuPDF. */
   toc?: [number, string, number][]
+  /** Flag se o livro possui perfil de mentoria socrática ativa. */
+  modoMentorHabilitado?: boolean
+  /** Gancho conversacional inicial para abertura da sessão de voz. */
+  hookAbertura?: string
+  /** Prompt customizado com diretrizes de mentoria para a obra. */
+  promptMentor?: string
+  /** Voz configurada no sintetizador (MiniMax / edge-tts). */
+  vozId?: string
 }
 
 /** Categorias oficiais do Leitor.

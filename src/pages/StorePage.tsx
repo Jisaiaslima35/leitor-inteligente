@@ -4,6 +4,7 @@ import type { Book } from '../domain/types'
 import type { LibraryState } from '../domain/library'
 import { ownsBook } from '../domain/library'
 import { loadCatalogFromSupabase, loadReaderCountsBySlug } from '../lib/catalogSupabase'
+import { useTenant } from '../lib/tenant'
 import { CAMPANHAS } from '../data/campaigns'
 import { Megaphone, ArrowRight } from 'lucide-react'
 
@@ -38,6 +39,7 @@ function readPending(): PendingCheckout | null {
 }
 
 export function StorePage({ onBuy, library, onGoLibrary }: Props) {
+  const { tenant, isEmbed } = useTenant()
   const [pending, setPending] = useState<PendingCheckout | null>(null)
   const [books, setBooks] = useState<Book[]>([])
   const [readerCounts, setReaderCounts] = useState<Record<string, number>>({})
@@ -45,12 +47,12 @@ export function StorePage({ onBuy, library, onGoLibrary }: Props) {
   const [catalogError, setCatalogError] = useState<string | null>(null)
 
   useEffect(() => {
-    // Carrega catálogo + prova social do Supabase (filtro server-side: admin + publicado + preço > 0).
-    // SEM fallback pro CATALOG hardcoded — vitrine vazia é honesta.
-    // Contagens: se RLS bloquear, retorna {} e BookCard não mostra o badge.
+    // Carrega catálogo + prova social do Supabase filtrando pelo tenant atual.
+    // No tenant raiz aparecem os livros legados; no devocional aparecem os do tenant.
     let cancelled = false
+    setLoadingCatalog(true)
     Promise.all([
-      loadCatalogFromSupabase(),
+      loadCatalogFromSupabase(tenant?.id),
       loadReaderCountsBySlug(),
     ])
       .then(([res, counts]) => {
@@ -70,7 +72,7 @@ export function StorePage({ onBuy, library, onGoLibrary }: Props) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [tenant?.id])
 
   useEffect(() => {
     // 2. Ao montar a Loja, vê se user voltou de um checkout
@@ -100,33 +102,35 @@ export function StorePage({ onBuy, library, onGoLibrary }: Props) {
       </div>
 
       {/* 11/09/2026 (v19 — campanhas): banner compacto das 3 landpages temáticas.
-          Aparece sempre (não depende de Supabase) — leva direto pra /tema/<slug>. */}
-      <div className="campaigns-banner" aria-label="Campanhas temáticas em destaque">
-        <div className="campaigns-banner-head">
-          <Megaphone size={16} />
-          <span>Campanhas temáticas</span>
+          Aparece apenas quando não está em modo embed. */}
+      {!isEmbed && (
+        <div className="campaigns-banner" aria-label="Campanhas temáticas em destaque">
+          <div className="campaigns-banner-head">
+            <Megaphone size={16} />
+            <span>Campanhas temáticas</span>
+          </div>
+          <div className="campaigns-banner-grid">
+            {CAMPANHAS.map((c) => (
+              <a
+                key={c.slug}
+                className="campaigns-banner-item"
+                href={`#/tema/${encodeURIComponent(c.slug)}`}
+                role="button"
+              >
+                <span className="campaigns-banner-item-badge">
+                  {c.badge.replace('COLEÇÃO ESPECIAL: ', '')}
+                </span>
+                <span className="campaigns-banner-item-desc">
+                  {c.descricao.slice(0, 90)}…
+                </span>
+                <span className="campaigns-banner-item-cta">
+                  Ver coleção <ArrowRight size={12} />
+                </span>
+              </a>
+            ))}
+          </div>
         </div>
-        <div className="campaigns-banner-grid">
-          {CAMPANHAS.map((c) => (
-            <a
-              key={c.slug}
-              className="campaigns-banner-item"
-              href={`#/tema/${encodeURIComponent(c.slug)}`}
-              role="button"
-            >
-              <span className="campaigns-banner-item-badge">
-                {c.badge.replace('COLEÇÃO ESPECIAL: ', '')}
-              </span>
-              <span className="campaigns-banner-item-desc">
-                {c.descricao.slice(0, 90)}…
-              </span>
-              <span className="campaigns-banner-item-cta">
-                Ver coleção <ArrowRight size={12} />
-              </span>
-            </a>
-          ))}
-        </div>
-      </div>
+      )}
 
       {pending && (
         <div

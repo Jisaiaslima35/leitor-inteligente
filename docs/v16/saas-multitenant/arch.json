@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Leitor Inteligente v16 — SaaS White-Label Multi-Tenant (proposta)",
+    "subtitle": "Isolamento por tenant_id, modo embed iframe, áudio do Professor IA na transmissão",
+    "quality_profile": "standard",
+    "viewBox": [1400, 800]
+  },
+  "components": [
+    { "id": "users", "type": "external", "label": "Usuários Leitor", "sublabel": "Comum / Acadêmico", "pos": [50, 80], "size": [180, 64] },
+    { "id": "embed-parents", "type": "external", "label": "Sites Clientes", "sublabel": "Rádio Devocional 12 (iframe)", "pos": [50, 200], "size": [180, 70], "tag": "allowlisted CSP" },
+    { "id": "radio-listeners", "type": "external", "label": "Ouvintes Web Rádio", "sublabel": "AzuraCast / YouTube", "pos": [50, 480], "size": [180, 64] },
+
+    { "id": "cf-tunnel", "type": "cloud", "label": "Cloudflare Tunnel", "sublabel": "TLS termina na borda", "pos": [320, 80], "size": [190, 64] },
+    { "id": "nginx", "type": "cloud", "label": "nginx :9121", "sublabel": "/t/:slug + CSP frame-ancestors", "pos": [320, 180], "size": [190, 70] },
+
+    { "id": "frontend", "type": "frontend", "label": "SPA Vite/React", "sublabel": "3 edições (Comum/Embed/Premium)", "pos": [580, 200], "size": [210, 90], "tag": "mesma UI, edições por tenant" },
+
+    { "id": "supabase", "type": "database", "label": "Supabase (Auth+DB+Storage)", "sublabel": "RLS por tenant_id", "pos": [870, 200], "size": [210, 110], "tag": "JWT enrich w/ tenants[]" },
+
+    { "id": "api-python", "type": "backend", "label": "Microserviços Python", "sublabel": "9130-9135 voice/quiz/upload", "pos": [580, 380], "size": [210, 80], "tag": "service_role bypassa RLS" },
+
+    { "id": "liquidsoap", "type": "backend", "label": "Liquidsoap", "sublabel": "1 instância/tenant", "pos": [320, 540], "size": [190, 70] },
+
+    { "id": "nine-router", "type": "cloud", "label": "9Router + MiniMax M3", "sublabel": "LLM + TTS voz Hermes", "pos": [580, 620], "size": [210, 70] },
+
+    { "id": "yt-live", "type": "external", "label": "YouTube Live (futuro)", "sublabel": "RTMP OBS Studio", "pos": [870, 540], "size": [210, 70] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "VPS Isaías (Contabo Frankfurt) — runtime existente do Leitor Inteligente", "wraps": ["cf-tunnel", "nginx", "frontend", "supabase", "api-python", "liquidsoap", "nine-router"] }
+  ],
+  "connections": [
+    { "id": "users-to-tunnel", "from": "users", "to": "cf-tunnel", "label": "HTTPS", "fromSide": "right", "toSide": "left" },
+    { "id": "embed-to-tunnel", "from": "embed-parents", "to": "cf-tunnel", "label": "iframe (CSP allow)", "fromSide": "right", "toSide": "left" },
+
+    { "id": "tunnel-to-nginx", "from": "cf-tunnel", "to": "nginx", "label": "TLS :443", "fromSide": "bottom", "toSide": "top", "labelAt": [415, 158] },
+    { "id": "nginx-to-frontend", "from": "nginx", "to": "frontend", "label": "/t/:slug", "fromSide": "right", "toSide": "left" },
+
+    { "id": "frontend-to-supabase", "from": "frontend", "to": "supabase", "label": "PostgREST (RLS tenant)", "fromSide": "right", "toSide": "left", "labelAt": [685, 304] },
+
+    { "id": "frontend-to-api", "from": "frontend", "to": "api-python", "label": "REST /api/professor", "fromSide": "bottom", "toSide": "top", "labelAt": [685, 304] },
+    { "id": "api-to-supabase", "from": "api-python", "to": "supabase", "label": "service_role", "fromSide": "right", "toSide": "left" },
+
+    { "id": "api-to-liquid", "from": "api-python", "to": "liquidsoap", "label": "PTT + TTS Professor no ar", "fromSide": "left", "toSide": "right", "labelAt": [545, 468] },
+    { "id": "api-to-nine", "from": "api-python", "to": "nine-router", "label": "TTS request", "fromSide": "bottom", "toSide": "top", "labelAt": [685, 550] },
+
+    { "id": "liquid-to-listeners", "from": "liquidsoap", "to": "radio-listeners", "label": "ICY stream", "fromSide": "left", "toSide": "right" },
+    { "id": "liquid-to-ytlive", "from": "liquidsoap", "to": "yt-live", "label": "RTMP (Fase 2)", "fromSide": "right", "toSide": "left", "labelAt": [690, 590] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Fase 1 (MVP multi-tenant)", "items": [
+      "tenants + tenant_id em 6 tabelas + RLS por JWT.tenants[]",
+      "Detecção tenant via /t/:slug + ?mode=embed",
+      "CSP frame-ancestors dinâmico via nginx map",
+      "UI enxuta no embed (Biblioteca + Loja)",
+      "Gestão de acervo por owner (reusa upload_book.py)"
+    ] },
+    { "dot": "emerald", "title": "Fase 2 (Professor IA no ar)", "items": [
+      "voice_session estendido: ffmpeg → icecast://tenant.mount",
+      "postMessage resize iframe (altura via MutationObserver)",
+      "Opt-in admin p/ injeção no ar (default OFF)",
+      "Roteamento por tenants.radio_mount"
+    ] },
+    { "dot": "rose", "title": "Fase 3 (Acadêmica Premium)", "items": [
+      "Quiz → Avaliação (rebrand)",
+      "Gestor vê pág + scores + acertos/erros por aluno",
+      "Pódio Top 3 já roda no awareness (v15.1)"
+    ] },
+    { "dot": "amber", "title": "Riscos", "items": [
+      "RLS mal escrita = cross-tenant leak (testar c/ 2 tenants)",
+      "Embed = vetor de clickjacking (allowlist + frame-ancestors)",
+      "Service role key em log (cofre, sem mudança)",
+      "Yjs/Monaco multi-tenant = bloqueio V1 (roomId atual)"
+    ] }
+  ]
+}

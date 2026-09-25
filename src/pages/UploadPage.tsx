@@ -4,6 +4,7 @@ import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
 import { CategoriaRadioGroup, type CategoriaValue } from '../components/CategoriaRadioGroup'
 import { absoluteUrl } from '../lib/baseUrl'
+import { useTenant } from '../lib/tenant'
 
 type Status = 'idle' | 'uploading' | 'processing' | 'done' | 'error'
 type AccessStatus = 'loading' | 'paid' | 'unpaid' | 'awaiting_confirmation'
@@ -18,6 +19,7 @@ const UPLOAD_FEE_CENTS = 1000  // R$10 por livro (modelo 1 pagamento = 1 upload)
 
 export function UploadPage({ onBack, onSuccess }: Props) {
   const { user } = useAuth()
+  const { tenant } = useTenant()
   const [file, setFile] = useState<File | null>(null)
   const [title, setTitle] = useState('')
   const [author, setAuthor] = useState('')
@@ -237,6 +239,7 @@ export function UploadPage({ onBack, onSuccess }: Props) {
           // 11/09/2026 (v19 — campanhas): descrição opcional, exibida nos cards
           // da landpage temática. Se vazia, CampaignCard usa fallback.
           description: finalDescription,
+          tenant_id: tenant?.id,
         }),
       })
       if (!procRes.ok) throw new Error(`Processamento falhou: ${await procRes.text()}`)

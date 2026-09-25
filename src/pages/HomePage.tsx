@@ -4,7 +4,9 @@ import type { Route } from '../App'
 import type { LibraryState } from '../domain/library'
 import type { Book } from '../domain/types'
 import { BookCard } from '../components/BookCard'
+import { VoiceMentorSection } from '../components/VoiceMentorSection'
 import { loadCatalogFromSupabase, loadReaderCountsBySlug } from '../lib/catalogSupabase'
+import { useTenant } from '../lib/tenant'
 import { ownsBook } from '../domain/library'
 
 interface Props {
@@ -14,6 +16,7 @@ interface Props {
 }
 
 export function HomePage({ onNavigate, onBuy, library }: Props) {
+  const { tenant } = useTenant()
   const [books, setBooks] = useState<Book[]>([])
   const [readerCounts, setReaderCounts] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
@@ -23,7 +26,7 @@ export function HomePage({ onNavigate, onBuy, library }: Props) {
     let cancelled = false
     setLoading(true)
     Promise.all([
-      loadCatalogFromSupabase(),
+      loadCatalogFromSupabase(tenant?.id),
       loadReaderCountsBySlug(),
     ]).then(([catalog, counts]) => {
       if (cancelled) return
@@ -33,12 +36,13 @@ export function HomePage({ onNavigate, onBuy, library }: Props) {
       setLoading(false)
     })
     return () => { cancelled = true }
-  }, [])
+  }, [tenant?.id])
 
   const featured = books[0]
 
   return (
-    <section>
+    <section className="home-container">
+      {/* 1. Hero / Banner Principal de Destaque */}
       <div className="hero">
         <div>
           <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', color: 'var(--accent)', fontWeight: 700, letterSpacing: '0.05em' }}>
@@ -79,18 +83,42 @@ export function HomePage({ onNavigate, onBuy, library }: Props) {
         )}
       </div>
 
+      {/* 2. Card Interativo do Professor IA / Conversa por Voz */}
+      {books.length > 0 && (
+        <div className="voice-mentor-wrapper">
+          <VoiceMentorSection
+            books={books}
+            defaultBookId={featured?.id}
+            onNavigate={onNavigate}
+            onBuy={onBuy}
+          />
+        </div>
+      )}
+
+      {/* 3. Título da Seção: E-books / Catálogo de Livros */}
       <div className="section-title">
-        <h2>Destaques da semana</h2>
-        <small>3 livros pensados pra mudar sua rotina</small>
+        <div>
+          <h2>E-books / Catálogo de Livros</h2>
+          <small>Obras completas com suporte ao Professor IA e Modo Mentor</small>
+        </div>
+        <button
+          className="btn btn-ghost"
+          style={{ fontSize: '0.85rem', padding: '8px 14px' }}
+          onClick={() => onNavigate('store')}
+        >
+          Ver todos os livros <ArrowRight size={14} />
+        </button>
       </div>
+
+      {/* 4. Grid com os Cards dos Livros */}
       {loading ? (
-        <p style={{ color: 'var(--muted)' }}>Carregando catálogo…</p>
+        <p style={{ color: 'var(--muted)', padding: '24px 0', textAlign: 'center' }}>Carregando catálogo…</p>
       ) : error ? (
-        <p style={{ color: 'var(--muted)' }}>
+        <p style={{ color: 'var(--muted)', padding: '24px 0', textAlign: 'center' }}>
           Catálogo temporariamente indisponível. Tente recarregar.
         </p>
       ) : books.length === 0 ? (
-        <p style={{ color: 'var(--muted)' }}>
+        <p style={{ color: 'var(--muted)', padding: '24px 0', textAlign: 'center' }}>
           Nenhum ebook publicado pelo administrador ainda.
         </p>
       ) : (

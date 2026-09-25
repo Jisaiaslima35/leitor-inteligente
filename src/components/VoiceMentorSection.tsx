@@ -21,6 +21,7 @@ import {
 } from 'lucide-react'
 import type { Book } from '../domain/types'
 import { BASE_URL } from '../lib/baseUrl'
+import { StudioVoiceOrb } from './StudioVoiceOrb'
 
 type VoiceState = 'IDLE' | 'CONNECTING' | 'LISTENING' | 'THINKING' | 'SPEAKING' | 'ERROR_MIC'
 
@@ -925,8 +926,8 @@ export function VoiceMentorSection({ books, defaultBookId, onNavigate }: Props) 
   return (
     <div
       style={{
-        marginTop: isMobile ? 24 : 50,
-        marginBottom: isMobile ? 20 : 40,
+        marginTop: isMobile ? 16 : 28,
+        marginBottom: isMobile ? 16 : 28,
         padding: isMobile ? '18px 14px' : '32px 28px',
         borderRadius: isMobile ? 18 : 24,
         background: 'linear-gradient(145deg, rgba(26, 38, 35, 0.96) 0%, rgba(15, 23, 21, 0.98) 100%)',
@@ -936,6 +937,7 @@ export function VoiceMentorSection({ books, defaultBookId, onNavigate }: Props) 
         position: 'relative',
         overflow: 'hidden',
         boxSizing: 'border-box',
+        width: '100%',
       }}
     >
       {/* Luz ambiente de fundo */}
@@ -1074,7 +1076,7 @@ export function VoiceMentorSection({ books, defaultBookId, onNavigate }: Props) 
             position: 'relative',
             overflow: 'hidden',
             width: '100%',
-            maxWidth: isMobile ? 360 : 'none',
+            maxWidth: isMobile ? '100%' : 'none',
             margin: isMobile ? '0 auto' : 0,
             boxSizing: 'border-box',
           }}
@@ -1645,8 +1647,11 @@ export function VoiceMentorSection({ books, defaultBookId, onNavigate }: Props) 
             </span>
           </div>
 
-          {/* O Orbe Visual Pulsante */}
-          <div
+          {/* O Orbe Visual Pulsante: Microfone Condensador 3D com Efeito Aurora & Ondas Sonoras */}
+          <StudioVoiceOrb
+            voiceState={voiceState}
+            isMentor={isMentor}
+            isMobile={isMobile}
             onClick={() => {
               if (voiceState === 'SPEAKING') {
                 handleBargeIn()
@@ -1654,54 +1659,7 @@ export function VoiceMentorSection({ books, defaultBookId, onNavigate }: Props) 
                 startVoiceSession()
               }
             }}
-            style={{
-              width: isMobile ? 104 : 120,
-              height: isMobile ? 104 : 120,
-              borderRadius: '50%',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: voiceState === 'CONNECTING' ? 'wait' : 'pointer',
-              position: 'relative',
-              transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
-              background:
-                voiceState === 'SPEAKING'
-                  ? isMentor
-                    ? 'radial-gradient(circle, #f59e0b 0%, #b45309 70%)'
-                    : 'radial-gradient(circle, #6366f1 0%, #4338ca 70%)'
-                  : voiceState === 'LISTENING'
-                  ? 'radial-gradient(circle, #10b981 0%, #047857 70%)'
-                  : voiceState === 'THINKING'
-                  ? 'radial-gradient(circle, #8b5cf6 0%, #6d28d9 70%)'
-                  : 'radial-gradient(circle, #374151 0%, #1f2937 70%)',
-              boxShadow:
-                voiceState !== 'IDLE'
-                  ? `0 0 40px ${isMentor ? 'rgba(245, 158, 11, 0.5)' : 'rgba(99, 102, 241, 0.5)'}`
-                  : '0 8px 24px rgba(0, 0, 0, 0.4)',
-              transform: voiceState === 'SPEAKING' || voiceState === 'LISTENING' ? 'scale(1.08)' : 'scale(1)',
-            }}
-            title={voiceState === 'SPEAKING' ? 'Clique para interromper o agente (Barge-in)' : 'Iniciar voz'}
-          >
-            {/* Ondas externas reativas */}
-            {(voiceState === 'SPEAKING' || voiceState === 'LISTENING') && (
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: -14,
-                  borderRadius: '50%',
-                  border: `2px solid ${isMentor ? 'rgba(245, 158, 11, 0.4)' : 'rgba(99, 102, 241, 0.4)'}`,
-                  animation: 'ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite',
-                }}
-              />
-            )}
-
-            {voiceState === 'IDLE' && <Mic size={44} color="#ffffff" />}
-            {voiceState === 'CONNECTING' && <Sparkles size={40} color="#fef08a" />}
-            {voiceState === 'LISTENING' && <Mic size={44} color="#ffffff" />}
-            {voiceState === 'THINKING' && <Sparkles size={42} color="#e9d5ff" />}
-            {voiceState === 'SPEAKING' && <Volume2 size={46} color="#ffffff" />}
-            {voiceState === 'ERROR_MIC' && <MicOff size={44} color="#f87171" />}
-          </div>
+          />
 
           {/* Caixa de Legenda / Transcrição em Tempo Real */}
           <div

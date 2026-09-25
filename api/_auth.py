@@ -41,17 +41,72 @@ def extract_email_from_jwt(token: str) -> str | None:
     return email or None
 
 
-def is_admin_email_jwt(token: str, admin_emails: Optional[list] = None) -> bool:
-    """Checagem rápida de admin só pelo email do JWT (sem consulta Supabase).
-    Usado em hot-path (ex.: bridge_server filtrando chunks de áudio) onde
-    não vale round-trip ao Supabase por mensagem."""
-    if admin_emails is None:
-        env = os.environ.get('ADMIN_EMAIL', '').strip()
-        admin_emails = [e.strip().lower() for e in env.split(',') if e.strip()]
-    if not admin_emails:
+_BROADCAST_AUTH_CACHE: Dict[str, tuple[float, bool]] = {}
+
+
+def _check_user_is_owner_or_admin(user_id: str, email: Optional[str]) -> bool:
+    """Checa no Supabase se user é owner_user_id na tabela tenants ou role in ('owner', 'admin') em user_tenants."""
+    now = time.time()
+    cached = _BROADCAST_AUTH_CACHE.get(user_id)
+    if cached and (now - cached[0]) < 60:
+        return cached[1]
+
+    supa_url, sr = _supabase_url_and_sr()
+    if not user_id or not sr:
         return False
-    email = extract_email_from_jwt(token)
-    return bool(email) and email in admin_emails
+
+    is_auth = False
+    try:
+        req = Request(
+            f'{supa_url}/rest/v1/tenants?select=id&owner_user_id=eq.{user_id}&limit=1',
+            headers={'apikey': sr, 'Authorization': f'Bearer {sr}'},
+        )
+        with urlopen(req, timeout=3) as r:
+            rows = json.loads(r.read())
+            if rows:
+                is_auth = True
+
+        if not is_auth:
+            req2 = Request(
+                f'{supa_url}/rest/v1/user_tenants?select=tenant_id&user_id=eq.{user_id}&role=in.(owner,admin)&limit=1',
+                headers={'apikey': sr, 'Authorization': f'Bearer {sr}'},
+            )
+            with urlopen(req2, timeout=3) as r2:
+                rows2 = json.loads(r2.read())
+                if rows2:
+                    is_auth = True
+    except Exception:
+        pass
+
+    _BROADCAST_AUTH_CACHE[user_id] = (now, is_auth)
+    return is_auth
+
+
+def is_admin_email_jwt(token: str, admin_emails: Optional[list] = None) -> bool:
+    """Checagem rápida de autorização para broadcast / admin:
+    1. Lista canônica (brisacamera34@gmail.com, geminijose356@gmail.com, ADMIN_EMAIL env)
+    2. Checagem dinâmica via Supabase com cache (owner/admin de tenant)
+    """
+    canonical = {'brisacamera34@gmail.com', 'geminijose356@gmail.com'}
+    if admin_emails:
+        canonical.update(e.strip().lower() for e in admin_emails if e.strip())
+    env = os.environ.get('ADMIN_EMAIL', '').strip()
+    if env:
+        canonical.update(e.strip().lower() for e in env.split(',') if e.strip())
+
+    payload = decode_jwt_payload(token)
+    if not payload:
+        return False
+
+    email = (payload.get('email') or '').strip().lower()
+    if email and email in canonical:
+        return True
+
+    user_id = payload.get('sub')
+    if user_id:
+        return _check_user_is_owner_or_admin(user_id, email)
+
+    return False
 
 
 def decode_jwt_payload(token: str) -> Optional[Dict[str, Any]]:
@@ -115,6 +170,8 @@ def is_admin_jwt(token: str, admin_emails: Optional[list] = None) -> Dict[str, A
     if admin_emails is None:
         env = os.environ.get('ADMIN_EMAIL', '').strip()
         admin_emails = [e.strip().lower() for e in env.split(',') if e.strip()]
+    if not admin_emails:
+        admin_emails = ['brisacamera34@gmail.com']
     payload = decode_jwt_payload(token)
     if not payload:
         return {'ok': False, 'reason': 'jwt inválido ou expirado', 'email': None,

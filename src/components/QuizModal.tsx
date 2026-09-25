@@ -19,6 +19,9 @@ interface Props {
   bookTitle: string
   pageNumber: number
   pageText: string
+  // Sala de Aula Interativa: se informado, persiste também em academic_evaluations
+  roomId?: string
+  studentName?: string
   // chamado depois que o score é persistido no Supabase — o pai usa pra
   // recarregar o QuizScoreBoard em tempo real
   onScoreSaved?: () => void
@@ -26,9 +29,13 @@ interface Props {
 
 type Phase = 'loading' | 'answering' | 'feedback' | 'result' | 'out_of_scope'
 
-// Constantes espelhando o backend
-const SCORE_CORRECT = 10
-const SCORE_WRONG = -5
+import {
+  SCORE_CORRECT,
+  SCORE_WRONG,
+  applyQuizResultToScore,
+  syncQuizScoreWithBackend,
+} from '../lib/quizScore'
+
 const QUESTIONS_PER_QUIZ = 3
 
 async function fetchQuestions(bookId: string, pageNumber: number, pageText: string): Promise<QuizQuestion[]> {
@@ -44,31 +51,7 @@ async function fetchQuestions(bookId: string, pageNumber: number, pageText: stri
   return data.questions as QuizQuestion[]
 }
 
-async function saveScore(bookId: string, pageNumber: number, correct: number, wrong: number): Promise<boolean> {
-  // Pega o token atual do Supabase (sem isso o backend devolve 401)
-  const { data: sessionData } = await supabase.auth.getSession()
-  const token = sessionData.session?.access_token
-  if (!token) {
-    console.warn('[quiz] sem token, score não persistido')
-    return false
-  }
-  try {
-    const r = await fetch(`${BASE_URL}api/quiz/save`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ book_id: bookId, page_number: pageNumber, correct, wrong }),
-    })
-    return r.ok
-  } catch (e) {
-    console.warn('[quiz] save falhou (não-bloqueante):', e)
-    return false
-  }
-}
-
-export function QuizModal({ open, onClose, bookId, bookTitle, pageNumber, pageText, onScoreSaved }: Props) {
+export function QuizModal({ open, onClose, bookId, bookTitle, pageNumber, pageText, roomId, studentName, onScoreSaved }: Props) {
   const [phase, setPhase] = useState<Phase>('loading')
   const [error, setError] = useState<string | null>(null)
   const [questions, setQuestions] = useState<QuizQuestion[]>([])
@@ -126,14 +109,27 @@ export function QuizModal({ open, onClose, bookId, bookTitle, pageNumber, pageTe
 
   const goNext = () => {
     if (currentIdx + 1 >= questions.length) {
-      // última pergunta → calcular score e salvar
+      // última pergunta → calcular delta, aplicar score cumulativo e sincronizar
       setSavingScore(true)
-      saveScore(bookId, pageNumber, correctCount, wrongCount).then((ok) => {
-        setSavingScore(false)
-        setPhase('result')
-        // avisa o pai pra refrescar o placar em tempo real
-        if (ok) onScoreSaved?.()
+
+      // 1. Aplica IMEDIATAMENTE no localStorage (offline-first somador cumulativo)
+      applyQuizResultToScore(bookId, correctCount, wrongCount)
+
+      // 2. Avisa o pai imediatamente para refletir no Placar do Quiz na tela
+      onScoreSaved?.()
+
+      // 3. Sincroniza em segundo plano com o backend (Supabase /api/quiz/save)
+      syncQuizScoreWithBackend(bookId, pageNumber, correctCount, wrongCount, {
+        roomId,
+        studentName,
       })
+        .then(() => {
+          onScoreSaved?.()
+        })
+        .finally(() => {
+          setSavingScore(false)
+          setPhase('result')
+        })
     } else {
       setCurrentIdx(currentIdx + 1)
       setPhase('answering')
@@ -396,7 +392,7 @@ export function QuizModal({ open, onClose, bookId, bookTitle, pageNumber, pageTe
               {totalScore > 0 ? '+' : ''}{totalScore}
             </div>
             <small style={{ color: '#a89cc8', display: 'block', marginBottom: 18 }}>
-              {correctCount} acerto{correctCount !== 1 ? 's' : ''} · {wrongCount} erro{wrongCount !== 1 ? 's' : ''} · salvo na sua conta
+              {correctCount} acerto{correctCount !== 1 ? 's' : ''} (+{correctCount * SCORE_CORRECT} pts) · {wrongCount} erro{wrongCount !== 1 ? 's' : ''} ({wrongCount * SCORE_WRONG} pts) · Placar cumulativo atualizado
             </small>
 
             {/* resumo das respostas */}
@@ -416,7 +412,7 @@ export function QuizModal({ open, onClose, bookId, bookTitle, pageNumber, pageTe
                       {ok ? `+${SCORE_CORRECT}` : SCORE_WRONG} · {ok ? 'Acertou' : 'Errou'}
                     </small>
                     <p style={{ margin: '4px 0 0', fontSize: 13, color: '#e8e0d0' }}>
-                      <strong>P{currentIdx + 1}</strong> {q.question}
+                      <strong>P{i + 1}</strong> {q.question}
                     </p>
                   </div>
                 )
